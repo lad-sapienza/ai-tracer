@@ -1,5 +1,6 @@
 import base64
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,15 @@ TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
 BACKEND_PORT = 8765
+
+# Windows venv uses Scripts\, Unix uses bin/
+_VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
+_EXE = ".exe" if sys.platform == "win32" else ""
+
+
+def _venv(name: str) -> Path:
+    """Return the path to an executable inside the managed venv."""
+    return VENV_DIR / _VENV_BIN / (name + _EXE)
 
 
 def _log(msg, level=Qgis.MessageLevel.Info):
@@ -101,8 +111,7 @@ class VectorizePlugin:
         if backend_client.health_check():
             return True
 
-        uvicorn = VENV_DIR / "bin" / "uvicorn"
-        if not uvicorn.exists():
+        if not _venv("uvicorn").exists():
             if not self._run_setup():
                 return False
 
@@ -133,13 +142,17 @@ class VectorizePlugin:
             )
             return False
 
-        pip = VENV_DIR / "bin" / "pip"
         VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
 
+        # --without-pip avoids the python3.exe ensurepip bug on Windows
         steps = [
-            ([python, "-m", "venv", str(VENV_DIR)], "Creating virtual environment…"),
-            ([str(pip), "install", "--upgrade", "pip"], "Upgrading pip…"),
-            ([str(pip), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
+            ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
+             "Creating virtual environment…"),
+            ([python, "-m", "ensurepip", "--upgrade"],
+             "Bootstrapping pip…"),
+            ([str(_venv("pip")), "install", "--upgrade", "pip"],
+             "Upgrading pip…"),
+            ([str(_venv("pip")), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
              "Installing dependencies (this may take several minutes)…"),
         ]
 
@@ -176,7 +189,7 @@ class VectorizePlugin:
         if checkpoint.exists():
             return True
 
-        python = VENV_DIR / "bin" / "python"
+        python = _venv("python")
         script = (
             "import urllib.request; "
             "urllib.request.urlretrieve("
@@ -196,7 +209,7 @@ class VectorizePlugin:
 
     def _start_backend(self) -> bool:
         """Launch the uvicorn subprocess and wait up to 60s for it to be ready."""
-        uvicorn = VENV_DIR / "bin" / "uvicorn"
+        uvicorn = _venv("uvicorn")
         log_file = VENV_DIR.parent / "backend.log"
 
         self._backend_log = open(log_file, "w")
