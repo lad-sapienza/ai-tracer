@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it using the following metadata."
+title: "AITracer by LAD"
+abstract: "AI-powered human-in-the-loop raster digitization plugin for QGIS 4. Uses SAM2 (Segment Anything Model 2) to segment features from georeferenced raster layers via interactive point prompts."
+version: 0.1.0
+date-released: 2026-04-27
+license: GPL-3.0
+repository-code: "https://github.com/lad-sapienza/ai-tracer"
+url: "https://lad.saras.uniroma1.it/blog/ai-tracer"
+keywords:
+  - QGIS
+  - archaeology
+  - digitization
+  - segmentation
+  - SAM2
+  - GIS
+  - remote sensing
+  - artificial intelligence
+authors:
+  - family-names: Bogdani
+    given-names: Julian
+    orcid: "https://orcid.org/0000-0001-5250-927X"
+    affiliation: "LAD – Laboratorio di Archeologia Digitale, Sapienza University of Rome"
+    email: julian.bogdani@uniroma1.it
+references:
+  - type: software
+    title: "SAM2: Segment Anything Model 2"
+    authors:
+      - family-names: Ravi
+        given-names: Nikhila
+    repository-code: "https://github.com/facebookresearch/sam2"
+    license: Apache-2.0
