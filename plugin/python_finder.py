@@ -80,14 +80,26 @@ def _candidates():
             yield from emit(Path("/usr/local/bin") / name)
 
     elif sys.platform == "win32":
-        # Python Launcher (py.exe) and common install prefixes
+        # Python Launcher (py.exe) — most reliable on Windows
         import shutil
         py = shutil.which("py")
         if py:
             yield from emit(Path(py))
+        # Standard python.org installer locations
+        local_programs = Path.home() / "AppData" / "Local" / "Programs" / "Python"
         for base in (
-            Path(r"C:\Python313"), Path(r"C:\Python312"), Path(r"C:\Python311"), Path(r"C:\Python310"),
-            Path.home() / "AppData" / "Local" / "Programs" / "Python",
+            Path(r"C:\Python313"), Path(r"C:\Python312"),
+            Path(r"C:\Python311"), Path(r"C:\Python310"),
+            # python.org per-user installs: …\Python\Python312\python.exe
+            local_programs / "Python313",
+            local_programs / "Python312",
+            local_programs / "Python311",
+            local_programs / "Python310",
+            # System-wide installs: C:\Program Files\Python312\
+            Path(r"C:\Program Files\Python313"),
+            Path(r"C:\Program Files\Python312"),
+            Path(r"C:\Program Files\Python311"),
+            Path(r"C:\Program Files\Python310"),
         ):
             for name in _python_names():
                 yield from emit(base / name)
@@ -122,6 +134,9 @@ def _check_version(path: Path):
     """
     # Skip embedded app-bundle Pythons on macOS — they lack ensurepip
     if sys.platform == "darwin" and ".app/" in str(path):
+        return None
+    # Skip OSGeo4W-bundled Python on Windows — it cannot create independent venvs
+    if sys.platform == "win32" and "OSGeo4W" in str(path):
         return None
     try:
         result = subprocess.run(

@@ -144,24 +144,29 @@ class VectorizePlugin:
 
         VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
 
-        # --without-pip avoids the python3.exe ensurepip bug on Windows
+        # --without-pip avoids the python3.exe ensurepip bug on Windows.
+        # cwd is only needed for the pip install step; venv/ensurepip steps
+        # must NOT use cwd=BACKEND_DIR (it may not exist yet on fresh installs).
         steps = [
             ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
-             "Creating virtual environment…"),
-            ([python, "-m", "ensurepip", "--upgrade"],
-             "Bootstrapping pip…"),
+             "Creating virtual environment…", False),
+            ([str(_venv("python")), "-m", "ensurepip", "--upgrade"],
+             "Bootstrapping pip…", False),
             ([str(_venv("pip")), "install", "--upgrade", "pip"],
-             "Upgrading pip…"),
+             "Upgrading pip…", False),
             ([str(_venv("pip")), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
-             "Installing dependencies (this may take several minutes)…"),
+             "Installing dependencies (this may take several minutes)…", True),
         ]
 
-        for cmd, label in steps:
+        for cmd, label, use_backend_cwd in steps:
             if dlg.wasCanceled():
                 return False
             dlg.setLabelText(label)
             QApplication.processEvents()
-            result = subprocess.run(cmd, capture_output=True, cwd=str(BACKEND_DIR))
+            kwargs = {"capture_output": True}
+            if use_backend_cwd:
+                kwargs["cwd"] = str(BACKEND_DIR)
+            result = subprocess.run(cmd, **kwargs)
             out = result.stderr.decode(errors="replace") or result.stdout.decode(errors="replace")
             _log(f"{label}\n{out[:500]}")
             if result.returncode != 0:
