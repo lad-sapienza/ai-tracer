@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+plugin/.venv/
+
+# Model weights — downloaded automatically on first run (~40 MB)
+**/backend/weights/*.pt
+**/backend/weights/*.pth
+
+# Build artefacts
+dist/
+build/
+*.zip
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log

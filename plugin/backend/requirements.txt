@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+torch --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu
+git+https://github.com/facebookresearch/sam2.git
+opencv-python-headless
+numpy
+pillow
