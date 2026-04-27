@@ -161,20 +161,42 @@ class VectorizePlugin:
         # ── Step 2: venv + pip + dependencies ─────────────────────────────
         VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
 
-        # --without-pip avoids the python3.exe / ensurepip bootstrap bug on
-        # Windows. cwd is only needed for the pip install step.
-        steps = [
-            ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
-             "Creating virtual environment…", None),
-            ([str(_venv("python")), "-m", "ensurepip", "--upgrade"],
-             "Bootstrapping pip…", None),
-            ([str(_venv("pip")), "install", "--upgrade", "pip"],
-             "Upgrading pip…", None),
-            ([str(_venv("pip")), "install", "-r",
-              str(BACKEND_DIR / "requirements.txt")],
-             "Installing dependencies (this may take several minutes)…",
-             str(BACKEND_DIR)),
-        ]
+        # Always wipe any pre-existing venv so we start from a clean state.
+        # A stale venv from a previous (failed) setup can leave pip absent,
+        # which causes FileNotFoundError when the pip step runs.
+        if VENV_DIR.exists():
+            import shutil
+            _log("Removing existing venv for a clean rebuild…")
+            shutil.rmtree(VENV_DIR)
+
+        # On Windows the venv Python is python.exe (no python3.exe), so we
+        # must bootstrap pip manually via ensurepip instead of letting venv
+        # install it (venv's pip installer calls python3.exe internally).
+        # On macOS/Linux venv bundles pip cleanly — no manual bootstrap needed.
+        if sys.platform == "win32":
+            steps = [
+                ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
+                 "Creating virtual environment…", None),
+                ([str(_venv("python")), "-m", "ensurepip", "--upgrade"],
+                 "Bootstrapping pip…", None),
+                ([str(_venv("pip")), "install", "--upgrade", "pip"],
+                 "Upgrading pip…", None),
+                ([str(_venv("pip")), "install", "-r",
+                  str(BACKEND_DIR / "requirements.txt")],
+                 "Installing dependencies (this may take several minutes)…",
+                 str(BACKEND_DIR)),
+            ]
+        else:
+            steps = [
+                ([python, "-m", "venv", str(VENV_DIR)],
+                 "Creating virtual environment…", None),
+                ([str(_venv("pip")), "install", "--upgrade", "pip"],
+                 "Upgrading pip…", None),
+                ([str(_venv("pip")), "install", "-r",
+                  str(BACKEND_DIR / "requirements.txt")],
+                 "Installing dependencies (this may take several minutes)…",
+                 str(BACKEND_DIR)),
+            ]
 
         for cmd, label, cwd in steps:
             if dlg.wasCanceled():
