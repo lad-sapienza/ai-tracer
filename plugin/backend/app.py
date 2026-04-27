@@ -72,10 +72,13 @@ def segment(req: SegmentRequest):
     except Exception as e:
         raise HTTPException(500, detail=f"Inference failed: {e}")
 
-    if not result["polygon"]:
-        raise HTTPException(200, detail="No object found.")
-
-    return result
+    # polygon may be [] when SAM2 finds nothing — return it as-is.
+    # The client already handles an empty polygon list gracefully.
+    return SegmentResponse(
+        session_id=result["session_id"],
+        polygon=result["polygon"],
+        confidence=result["confidence"],
+    )
 
 
 @app.post("/clear")

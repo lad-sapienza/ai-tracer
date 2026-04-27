@@ -1,5 +1,6 @@
 import base64
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -165,7 +166,6 @@ class VectorizePlugin:
         # A stale venv from a previous (failed) setup can leave pip absent,
         # which causes FileNotFoundError when the pip step runs.
         if VENV_DIR.exists():
-            import shutil
             _log("Removing existing venv for a clean rebuild…")
             shutil.rmtree(VENV_DIR)
 
