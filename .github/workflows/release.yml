@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Check tag version matches metadata.txt
+        run: |
+          META_VERSION=$(grep '^version=' plugin/metadata.txt | cut -d= -f2)
+          TAG_VERSION=${{ steps.version.outputs.version }}
+          if [ "$META_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: metadata.txt version ($META_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Build plugin zip
+        run: bash package.sh ${{ steps.version.outputs.version }}
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist/aitracer-${{ steps.version.outputs.version }}.zip
+          name: AITracer by LAD v${{ steps.version.outputs.version }}
