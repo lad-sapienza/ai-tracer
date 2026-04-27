@@ -1,6 +1,7 @@
 import base64
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -12,10 +13,9 @@ from qgis.core import (
     QgsProject, QgsVectorLayer,
     QgsFillSymbol, QgsSingleSymbolRenderer,
 )
-from qgis.PyQt.QtGui import QColor
 from qgis.gui import QgsMapToolPan
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QProgressDialog
+from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
 
 from .map_tool import SegmentationTool
 from .canvas_capture import capture_base64
@@ -27,10 +27,11 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
+PLUGIN_VERSION = "0.1.6"        # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
-BACKEND_PORT = 8765
+BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -57,6 +58,7 @@ class VectorizePlugin:
         self._session = _empty_session()
         self._backend_proc = None
         self._backend_log = None
+        self._backend_port: int = BACKEND_PORT
 
     # ------------------------------------------------------------------ #
     # QGIS plugin lifecycle                                               #
@@ -75,6 +77,7 @@ class VectorizePlugin:
         self._dock.cancelled.connect(self._on_cancel)
         self._dock.simplify_changed.connect(self._on_simplify_changed)
         self._dock.tool_toggled.connect(self._toggle_tool)
+        self._dock.reset_requested.connect(self._on_reset_backend)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
 
         self._dock.set_status("Activate the tool to start segmentation.")
@@ -110,7 +113,7 @@ class VectorizePlugin:
 
     def _ensure_backend(self) -> bool:
         """Make sure the backend is running. Return True if ready."""
-        if backend_client.health_check():
+        if backend_client.health_check(expected_version=PLUGIN_VERSION):
             return True
 
         if not _venv("uvicorn").exists():
@@ -122,8 +125,6 @@ class VectorizePlugin:
     def _run_setup(self) -> bool:
         """Download standalone Python, create venv, install requirements and
         model weights. Returns True on success."""
-        from qgis.PyQt.QtWidgets import QApplication
-
         dlg = QProgressDialog(
             "Setting up AITracer backend…", "Cancel", 0, 0,
             self._iface.mainWindow()
@@ -264,6 +265,9 @@ class VectorizePlugin:
 
     def _start_backend(self) -> bool:
         """Launch the uvicorn subprocess and wait up to 60s for it to be ready."""
+        self._backend_port = _find_free_port()
+        backend_client.set_port(self._backend_port)
+
         uvicorn = _venv("uvicorn")
         log_file = VENV_DIR.parent / "backend.log"
 
@@ -277,18 +281,22 @@ class VectorizePlugin:
             popen_kw["startupinfo"] = _win_startupinfo()
         self._backend_log = popen_kw["stdout"]
         self._backend_proc = subprocess.Popen(
-            [str(uvicorn), "app:app", "--port", str(BACKEND_PORT), "--log-level", "info"],
+            [str(uvicorn), "app:app",
+             "--port", str(self._backend_port),
+             "--log-level", "info"],
             **popen_kw,
         )
-        _log(f"Backend subprocess started (log: {log_file}), waiting for readiness…")
+        _log(f"Backend started on port {self._backend_port} (log: {log_file}), "
+             "waiting for readiness…")
 
         deadline = time.time() + 60  # SAM2 model load can be slow
         while time.time() < deadline:
-            if backend_client.health_check():
+            QApplication.processEvents()  # keep QGIS UI responsive during startup
+            if backend_client.health_check(expected_version=PLUGIN_VERSION):
                 _log("Backend ready.")
                 return True
             if self._backend_proc.poll() is not None:
-                # Process exited already — read log and report
+                # Process exited — read log and report
                 self._backend_log.flush()
                 try:
                     log_tail = log_file.read_text()[-600:]
@@ -297,7 +305,7 @@ class VectorizePlugin:
                 _log(f"Backend crashed:\n{log_tail}", Qgis.MessageLevel.Critical)
                 self._iface.messageBar().pushMessage(
                     PLUGIN_NAME,
-                    f"Backend crashed on startup. See Log Messages → AITTrace.\n{log_tail[:200]}",
+                    f"Backend crashed on startup. See Log Messages → AITracer.\n{log_tail[:200]}",
                     level=Qgis.MessageLevel.Critical, duration=15
                 )
                 return False
@@ -323,6 +331,22 @@ class VectorizePlugin:
         if hasattr(self, "_backend_log") and self._backend_log:
             self._backend_log.close()
             self._backend_log = None
+
+    def _on_reset_backend(self):
+        """Delete the venv and re-run first-time setup on next activation.
+
+        Triggered by the 'Reset installation' button in the dock.
+        The standalone Python (~/.aitracer/python_standalone) is preserved
+        so only the pip packages need to be reinstalled.
+        """
+        self._on_cancel()
+        self._stop_backend()
+        if VENV_DIR.exists():
+            shutil.rmtree(VENV_DIR)
+            _log("Venv removed by user request.")
+        self._dock.set_status(
+            "Installation reset. Press Activate to reinstall."
+        )
 
     # ------------------------------------------------------------------ #
     # Temp layer management                                               #
@@ -530,6 +554,19 @@ def _win_startupinfo():
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = subprocess.SW_HIDE
     return si
+
+
+def _find_free_port() -> int:
+    """Return an available TCP port on localhost.
+
+    Uses the OS ephemeral-port mechanism: bind to port 0, let the kernel
+    choose a free port, record it, then immediately release the socket.
+    The port is not reserved, but the window between release and uvicorn
+    binding is negligible on a local machine.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _empty_session() -> dict:

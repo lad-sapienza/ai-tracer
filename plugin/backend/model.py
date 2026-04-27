@@ -26,7 +26,12 @@ class SegmentationModel:
                 f"Model checkpoint not found: {checkpoint}\n"
                 f"Run the setup to download it first."
             )
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"  # Apple Silicon GPU — 3-5× faster than CPU
+        else:
+            device = "cpu"
         sam2 = build_sam2(CONFIG_NAME, str(checkpoint), device=device)
         self._predictor = SAM2ImagePredictor(sam2)
         self._sessions: dict[str, dict] = {}  # session_id → {embedding, last_access}

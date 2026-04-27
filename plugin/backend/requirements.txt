@@ -1,8 +1,10 @@
 fastapi
 uvicorn[standard]
+# CPU-only PyTorch wheels — must be listed before sam2 so pip sees them
+# as already satisfied when resolving sam2's torch dependency.
 torch --index-url https://download.pytorch.org/whl/cpu
 torchvision --index-url https://download.pytorch.org/whl/cpu
-git+https://github.com/facebookresearch/sam2.git
+sam2>=1.0,<2.0
 opencv-python-headless
 numpy
 pillow

@@ -38,7 +38,8 @@ class AITracerDock(QDockWidget):
     accepted = pyqtSignal()
     cancelled = pyqtSignal()
     simplify_changed = pyqtSignal(float)
-    tool_toggled = pyqtSignal(bool)  # True = activate, False = deactivate
+    tool_toggled = pyqtSignal(bool)   # True = activate, False = deactivate
+    reset_requested = pyqtSignal()    # user pressed "Reset installation"
 
     def __init__(self, parent=None):
         super().__init__("AITracer by LAD", parent)
@@ -130,6 +131,18 @@ class AITracerDock(QDockWidget):
         layout.addWidget(tip)
 
         layout.addStretch()
+
+        # Reset installation button (troubleshooting)
+        self._reset_btn = QPushButton("⟳  Reset installation")
+        self._reset_btn.setToolTip(
+            "Delete the backend virtual environment and re-run first-time setup.\n"
+            "Use this if the backend fails to start after an update or a failed install.\n"
+            "The standalone Python (~/.aitracer/python_standalone) is kept."
+        )
+        self._reset_btn.setStyleSheet("color: gray; font-size: 10px;")
+        self._reset_btn.setFlat(True)
+        self._reset_btn.clicked.connect(self.reset_requested)
+        layout.addWidget(self._reset_btn)
 
         # Footer links
         footer_line = QFrame()

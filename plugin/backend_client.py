@@ -2,8 +2,9 @@ import urllib.request
 import urllib.error
 import json
 
-
-BASE_URL = "http://localhost:8765"
+# Port is set at runtime by main.py after finding a free port.
+# Default matches the historical hard-coded value.
+_port: int = 8765
 TIMEOUT = 10.0
 
 
@@ -11,11 +12,31 @@ class BackendError(Exception):
     pass
 
 
-def health_check() -> bool:
-    """Return True if the backend is reachable and ready."""
+def set_port(port: int) -> None:
+    """Update the port used for all subsequent backend calls."""
+    global _port
+    _port = port
+
+
+def _url(path: str) -> str:
+    return f"http://localhost:{_port}{path}"
+
+
+def health_check(expected_version: str | None = None) -> bool:
+    """Return True if the backend is reachable, healthy, and (optionally)
+    running the expected plugin version.
+
+    Passing *expected_version* guards against a stale uvicorn process left
+    over from a previous plugin version answering on the same port.
+    """
     try:
-        with urllib.request.urlopen(f"{BASE_URL}/health", timeout=3) as r:
-            return r.status == 200
+        with urllib.request.urlopen(_url("/health"), timeout=3) as r:
+            if r.status != 200:
+                return False
+            data = json.loads(r.read())
+            if expected_version and data.get("version") != expected_version:
+                return False
+            return data.get("status") == "ok"
     except Exception:
         return False
 
@@ -28,7 +49,7 @@ def segment(image_b64: str | None,
 
     Raises BackendError on network failure, timeout, or server error.
     """
-    payload = {
+    payload: dict = {
         "positive_points": positive_points,
         "negative_points": negative_points,
     }
@@ -39,7 +60,7 @@ def segment(image_b64: str | None,
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"{BASE_URL}/segment",
+        _url("/segment"),
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -56,11 +77,11 @@ def segment(image_b64: str | None,
         raise BackendError("Request timed out.")
 
 
-def clear_session(session_id: str):
-    """Notify the backend to evict a cached session."""
+def clear_session(session_id: str) -> None:
+    """Notify the backend to evict a cached session (best-effort)."""
     payload = json.dumps({"session_id": session_id}).encode()
     req = urllib.request.Request(
-        f"{BASE_URL}/clear",
+        _url("/clear"),
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",

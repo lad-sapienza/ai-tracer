@@ -5,6 +5,10 @@ from pydantic import BaseModel
 
 from model import SegmentationModel
 
+# Must match PLUGIN_VERSION in plugin/main.py — used to detect stale
+# uvicorn processes left over from a previous plugin version.
+APP_VERSION = "0.1.6"
+
 _model: SegmentationModel | None = None
 
 
@@ -46,7 +50,7 @@ class ClearRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "sam2-tiny"}
+    return {"status": "ok", "model": "sam2-tiny", "version": APP_VERSION}
 
 
 @app.post("/segment", response_model=SegmentResponse)
