@@ -1,4 +1,5 @@
 import base64
+import os
 import subprocess
 import sys
 import time
@@ -22,7 +23,7 @@ from .preview import PreviewOverlay
 from .dock import AITracerDock
 from . import backend_client
 from .backend_client import BackendError
-from .python_finder import find_python
+from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
 TEMP_LAYER_NAME = "AITracer"
@@ -118,7 +119,8 @@ class VectorizePlugin:
         return self._start_backend()
 
     def _run_setup(self) -> bool:
-        """Create venv, install requirements, download weights. Returns success."""
+        """Download standalone Python, create venv, install requirements and
+        model weights. Returns True on success."""
         from qgis.PyQt.QtWidgets import QApplication
 
         dlg = QProgressDialog(
@@ -126,58 +128,81 @@ class VectorizePlugin:
             self._iface.mainWindow()
         )
         dlg.setWindowTitle("AITracer — First-time Setup")
-        dlg.setMinimumWidth(400)
+        dlg.setMinimumWidth(420)
         dlg.setModal(True)
         dlg.show()
         QApplication.processEvents()
 
-        try:
-            python = find_python()
-            _log(f"Using Python: {python}")
-        except RuntimeError as e:
-            dlg.close()
-            self._iface.messageBar().pushMessage(
-                PLUGIN_NAME, str(e),
-                level=Qgis.MessageLevel.Critical, duration=10
-            )
-            return False
+        # ── Step 1: standalone Python ──────────────────────────────────────
+        if not python_downloader.is_installed():
+            def _progress(pct, msg):
+                dlg.setLabelText(msg)
+                QApplication.processEvents()
 
+            ok, msg = python_downloader.install(
+                progress_cb=_progress,
+                cancel_check=dlg.wasCanceled,
+            )
+            if not ok:
+                dlg.close()
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME,
+                    f"Could not install Python runtime: {msg}",
+                    level=Qgis.MessageLevel.Critical, duration=15,
+                )
+                return False
+            if dlg.wasCanceled():
+                dlg.close()
+                return False
+
+        python = python_downloader.python_executable()
+        _log(f"Using standalone Python: {python}")
+
+        # ── Step 2: venv + pip + dependencies ─────────────────────────────
         VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
 
-        # --without-pip avoids the python3.exe ensurepip bug on Windows.
-        # cwd is only needed for the pip install step; venv/ensurepip steps
-        # must NOT use cwd=BACKEND_DIR (it may not exist yet on fresh installs).
+        # --without-pip avoids the python3.exe / ensurepip bootstrap bug on
+        # Windows. cwd is only needed for the pip install step.
         steps = [
             ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
-             "Creating virtual environment…", False),
+             "Creating virtual environment…", None),
             ([str(_venv("python")), "-m", "ensurepip", "--upgrade"],
-             "Bootstrapping pip…", False),
+             "Bootstrapping pip…", None),
             ([str(_venv("pip")), "install", "--upgrade", "pip"],
-             "Upgrading pip…", False),
-            ([str(_venv("pip")), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
-             "Installing dependencies (this may take several minutes)…", True),
+             "Upgrading pip…", None),
+            ([str(_venv("pip")), "install", "-r",
+              str(BACKEND_DIR / "requirements.txt")],
+             "Installing dependencies (this may take several minutes)…",
+             str(BACKEND_DIR)),
         ]
 
-        for cmd, label, use_backend_cwd in steps:
+        for cmd, label, cwd in steps:
             if dlg.wasCanceled():
+                dlg.close()
                 return False
             dlg.setLabelText(label)
             QApplication.processEvents()
-            kwargs = {"capture_output": True}
-            if use_backend_cwd:
-                kwargs["cwd"] = str(BACKEND_DIR)
-            result = subprocess.run(cmd, **kwargs)
-            out = result.stderr.decode(errors="replace") or result.stdout.decode(errors="replace")
+
+            run_kwargs: dict = {"capture_output": True, "env": _clean_env()}
+            if cwd:
+                run_kwargs["cwd"] = cwd
+            if sys.platform == "win32":
+                run_kwargs["startupinfo"] = _win_startupinfo()
+
+            result = subprocess.run(cmd, **run_kwargs)
+            out = (result.stderr.decode(errors="replace")
+                   or result.stdout.decode(errors="replace"))
             _log(f"{label}\n{out[:500]}")
             if result.returncode != 0:
                 dlg.close()
                 self._iface.messageBar().pushMessage(
                     PLUGIN_NAME,
                     f"Setup failed at '{label}': {out[:300]}",
-                    level=Qgis.MessageLevel.Critical, duration=10
+                    level=Qgis.MessageLevel.Critical, duration=10,
                 )
                 return False
 
+        # ── Step 3: model weights ──────────────────────────────────────────
         dlg.setLabelText("Downloading SAM2-tiny weights (~40 MB)…")
         QApplication.processEvents()
         if not self._download_weights():
@@ -202,7 +227,10 @@ class VectorizePlugin:
             f"'{checkpoint}'"
             ")"
         )
-        result = subprocess.run([str(python), "-c", script], capture_output=True)
+        run_kw: dict = {"capture_output": True, "env": _clean_env()}
+        if sys.platform == "win32":
+            run_kw["startupinfo"] = _win_startupinfo()
+        result = subprocess.run([str(python), "-c", script], **run_kw)
         if result.returncode != 0:
             self._iface.messageBar().pushMessage(
                 PLUGIN_NAME,
@@ -217,12 +245,18 @@ class VectorizePlugin:
         uvicorn = _venv("uvicorn")
         log_file = VENV_DIR.parent / "backend.log"
 
-        self._backend_log = open(log_file, "w")
+        popen_kw: dict = {
+            "cwd": str(BACKEND_DIR),
+            "stdout": open(log_file, "w"),
+            "stderr": subprocess.STDOUT,
+            "env": _clean_env(),
+        }
+        if sys.platform == "win32":
+            popen_kw["startupinfo"] = _win_startupinfo()
+        self._backend_log = popen_kw["stdout"]
         self._backend_proc = subprocess.Popen(
             [str(uvicorn), "app:app", "--port", str(BACKEND_PORT), "--log-level", "info"],
-            cwd=str(BACKEND_DIR),
-            stdout=self._backend_log,
-            stderr=self._backend_log,
+            **popen_kw,
         )
         _log(f"Backend subprocess started (log: {log_file}), waiting for readiness…")
 
@@ -452,6 +486,28 @@ def _apply_default_style(layer: QgsVectorLayer):
         "outline_style": "solid",
     })
     layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+
+
+def _clean_env() -> dict:
+    """Return os.environ without PYTHONHOME/PYTHONPATH.
+
+    Prevents the QGIS Python environment from leaking into standalone-Python
+    subprocesses (QGIS sets PYTHONHOME to its own interpreter, which would
+    confuse an unrelated Python executable).
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _win_startupinfo():
+    """STARTUPINFO that hides the console window spawned on Windows."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
 
 
 def _empty_session() -> dict:
