@@ -16,6 +16,7 @@ class SegmentationTool(QgsMapTool):
     clicked = pyqtSignal(QgsPointXY, bool)  # (point_in_map_crs, is_negative)
     accept_requested = pyqtSignal()         # Enter / Return
     cancel_requested = pyqtSignal()         # Escape
+    undo_requested = pyqtSignal()           # Ctrl+Z
 
     def __init__(self, canvas: QgsMapCanvas):
         super().__init__(canvas)
@@ -58,6 +59,11 @@ class SegmentationTool(QgsMapTool):
             if event.key() == Qt.Key.Key_Escape:
                 event.accept()
                 self.cancel_requested.emit()
+                return
+            if (event.key() == Qt.Key.Key_Z
+                    and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                event.accept()
+                self.undo_requested.emit()
                 return
         if not self._session_active:
             super().keyPressEvent(event)

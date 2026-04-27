@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software in your research, please cite it using the following metadata."
 title: "AITracer by LAD"
 abstract: "AI-powered human-in-the-loop raster digitization plugin for QGIS 4. Uses SAM2 (Segment Anything Model 2) to segment features from georeferenced raster layers via interactive point prompts."
-version: 0.1.6
+version: 0.1.7
 date-released: 2026-04-27
 license: GPL-3.0
 repository-code: "https://github.com/lad-sapienza/ai-tracer"

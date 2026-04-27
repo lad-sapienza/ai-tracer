@@ -14,10 +14,11 @@ from qgis.core import (
     QgsFillSymbol, QgsSingleSymbolRenderer,
 )
 from qgis.gui import QgsMapToolPan
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QThread
 from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
 
 from .map_tool import SegmentationTool
+from .segmentation_worker import SegmentationWorker
 from .canvas_capture import capture_base64
 from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
@@ -27,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.6"        # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.7"        # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -59,6 +60,13 @@ class VectorizePlugin:
         self._backend_proc = None
         self._backend_log = None
         self._backend_port: int = BACKEND_PORT
+        self._worker: SegmentationWorker | None = None
+        self._worker_thread: QThread | None = None
+        self._busy: bool = False   # True while a segmentation request is in flight
+        # Keeps (worker, thread) pairs alive until the thread fully exits.
+        # Without this, Python's GC can free the objects while Qt is still
+        # using them, causing a segfault.
+        self._live_threads: list = []
 
     # ------------------------------------------------------------------ #
     # QGIS plugin lifecycle                                               #
@@ -69,6 +77,7 @@ class VectorizePlugin:
         self._tool.clicked.connect(self._on_canvas_clicked)
         self._tool.accept_requested.connect(self._on_accept)
         self._tool.cancel_requested.connect(self._on_cancel)
+        self._tool.undo_requested.connect(self._on_undo)
 
         self._overlay = PreviewOverlay(self._canvas)
 
@@ -78,12 +87,17 @@ class VectorizePlugin:
         self._dock.simplify_changed.connect(self._on_simplify_changed)
         self._dock.tool_toggled.connect(self._toggle_tool)
         self._dock.reset_requested.connect(self._on_reset_backend)
+        self._dock.undo_requested.connect(self._on_undo)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
 
         self._dock.set_status("Activate the tool to start segmentation.")
 
     def unload(self):
         self._on_cancel()
+        # Wait briefly for any in-flight thread to finish before unloading.
+        for _worker, thread in list(self._live_threads):
+            thread.wait(2000)  # ms — don't block forever
+        self._live_threads.clear()
         self._stop_backend()
         if self._dock:
             self._iface.removeDockWidget(self._dock)
@@ -404,27 +418,77 @@ class VectorizePlugin:
         )
         if is_negative:
             self._session["negative_points"].append([px, py])
-            self._dock.set_status("Exclusion point added. Continue or Accept.")
         else:
             self._session["positive_points"].append([px, py])
-            self._dock.set_status("Segmenting…")
 
         self._run_segmentation()
 
     def _run_segmentation(self):
-        try:
-            result = backend_client.segment(
-                image_b64=self._session["canvas_image_b64"] if not self._session["session_id"] else None,
-                positive_points=self._session["positive_points"],
-                negative_points=self._session["negative_points"],
-                session_id=self._session["session_id"],
-            )
-        except BackendError as e:
-            self._iface.messageBar().pushMessage(
-                PLUGIN_NAME, str(e),
-                level=Qgis.MessageLevel.Warning, duration=5
-            )
-            self._dock.set_status("Segmentation failed. Try again.")
+        """Fire an async segmentation request. Returns immediately."""
+        # Discard any in-flight request (its result will be ignored).
+        self._discard_worker()
+
+        # Show busy cursor exactly once — _busy guards against stacking.
+        if not self._busy:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self._busy = True
+        self._dock.set_status("Segmenting…")
+
+        worker = SegmentationWorker(
+            image_b64=(self._session["canvas_image_b64"]
+                       if not self._session["session_id"] else None),
+            positive_points=list(self._session["positive_points"]),
+            negative_points=list(self._session["negative_points"]),
+            session_id=self._session["session_id"],
+        )
+        thread = QThread()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_segment_done)
+        worker.failed.connect(self._on_segment_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        # Register in _live_threads BEFORE start() — guarantees a Python
+        # reference exists for the entire thread lifetime, preventing GC.
+        pair = (worker, thread)
+        self._live_threads.append(pair)
+        thread.finished.connect(lambda p=pair: self._live_threads.remove(p)
+                                if p in self._live_threads else None)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._worker = worker
+        self._worker_thread = thread
+        thread.start()
+
+    def _discard_worker(self):
+        """Disconnect result signals from the current in-flight worker.
+
+        The underlying thread keeps running to completion and self-cleans up
+        via deleteLater — we just stop listening to its result.
+        """
+        if self._worker is not None:
+            try:
+                self._worker.finished.disconnect(self._on_segment_done)
+                self._worker.failed.disconnect(self._on_segment_failed)
+            except RuntimeError:
+                pass  # already disconnected
+        self._worker = None
+        self._worker_thread = None
+
+    def _restore_cursor(self):
+        """Restore the wait cursor if we set one."""
+        if self._busy:
+            QApplication.restoreOverrideCursor()
+            self._busy = False
+
+    # ---- async result slots (called on the main thread by Qt) ----
+
+    def _on_segment_done(self, result: dict):
+        self._restore_cursor()
+        # (_live_threads cleanup happens via thread.finished signal)
+
+        # Guard: session may have been cancelled while the request was in flight.
+        if not self._session["active"]:
             return
 
         self._session["session_id"] = result["session_id"]
@@ -444,6 +508,19 @@ class VectorizePlugin:
         self._update_preview()
         self._dock.set_status("Preview ready. Refine or Accept.")
 
+    def _on_segment_failed(self, msg: str):
+        self._restore_cursor()
+        # (_live_threads cleanup happens via thread.finished signal)
+
+        if not self._session["active"]:
+            return
+
+        self._iface.messageBar().pushMessage(
+            PLUGIN_NAME, msg,
+            level=Qgis.MessageLevel.Warning, duration=5
+        )
+        self._dock.set_status("Segmentation failed. Try again.")
+
     def _update_preview(self):
         raw = self._session.get("raw_polygon_geo")
         if not raw:
@@ -456,6 +533,34 @@ class VectorizePlugin:
     def _on_simplify_changed(self, _value: float):
         if self._session["active"]:
             self._update_preview()
+
+    def _on_undo(self):
+        """Remove the most recently added prompt point and re-segment."""
+        if not self._session["active"]:
+            return
+        # Prefer undoing negative points first (they were added last).
+        if self._session["negative_points"]:
+            self._session["negative_points"].pop()
+        elif self._session["positive_points"]:
+            self._session["positive_points"].pop()
+        else:
+            return
+
+        if (not self._session["positive_points"]
+                and not self._session["negative_points"]):
+            # No points left — clear the preview but keep the session open.
+            self._restore_cursor()
+            self._discard_worker()
+            self._session["session_id"] = None
+            self._session["raw_polygon_geo"] = []
+            self._session["current_polygon_geo"] = []
+            self._overlay.clear()
+            self._dock.set_confidence(None)
+            self._dock.set_status("All points removed. Left-click to start again.")
+            return
+
+        self._dock.set_status("Point removed. Re-segmenting…")
+        self._run_segmentation()
 
     def _on_accept(self):
         polygon = self._session.get("current_polygon_geo")
@@ -480,6 +585,8 @@ class VectorizePlugin:
             self._dock.set_status("Cancelled. Left-click to segment.")
 
     def _end_session(self):
+        self._restore_cursor()
+        self._discard_worker()
         self._overlay.clear()
         self._session = _empty_session()
         if self._tool:

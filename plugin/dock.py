@@ -40,6 +40,7 @@ class AITracerDock(QDockWidget):
     simplify_changed = pyqtSignal(float)
     tool_toggled = pyqtSignal(bool)   # True = activate, False = deactivate
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
+    undo_requested = pyqtSignal()     # Ctrl+Z pressed in dock context
 
     def __init__(self, parent=None):
         super().__init__("AITracer by LAD", parent)
@@ -123,6 +124,7 @@ class AITracerDock(QDockWidget):
         tip = QLabel(
             "Left-click: add to selection\n"
             "Right-click: remove from selection\n"
+            "Ctrl+Z: undo last point\n"
             "Enter: accept — Escape: cancel\n"
             "Tip: keep only the raster layer visible."
         )
@@ -182,6 +184,11 @@ class AITracerDock(QDockWidget):
         self._sc_cancel.setEnabled(False)
         self._sc_cancel.activated.connect(self.cancelled)
 
+        self._sc_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._sc_undo.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._sc_undo.setEnabled(False)
+        self._sc_undo.activated.connect(self.undo_requested)
+
     def _on_simplify_slider(self, value: int):
         tolerance = value * 0.01
         self._simplify_value_label.setText(f"{tolerance:.2f}")
@@ -229,5 +236,6 @@ class AITracerDock(QDockWidget):
         self._sc_accept.setEnabled(active)
         self._sc_accept2.setEnabled(active)
         self._sc_cancel.setEnabled(active)
+        self._sc_undo.setEnabled(active)
         if not active:
             self.set_confidence(None)
