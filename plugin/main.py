@@ -14,7 +14,7 @@ from qgis.core import (
     QgsFillSymbol, QgsSingleSymbolRenderer,
 )
 from qgis.gui import QgsMapToolPan
-from qgis.PyQt.QtCore import Qt, QEvent, QObject, QThread
+from qgis.PyQt.QtCore import Qt, QEvent, QObject, QThread, QTimer
 from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
 
 from .map_tool import SegmentationTool
@@ -28,11 +28,12 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.8"        # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.9"        # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
 BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
+SESSION_IDLE_MS = 5 * 60 * 1000  # 5 minutes — auto-cancel idle sessions
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -105,6 +106,10 @@ class VectorizePlugin:
         self._live_threads: list = []
         self._undo_interceptor = _UndoInterceptor(self)
         QApplication.instance().installEventFilter(self._undo_interceptor)
+        self._idle_timer = QTimer()
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.setInterval(SESSION_IDLE_MS)
+        self._idle_timer.timeout.connect(self._on_idle_timeout)
 
     # ------------------------------------------------------------------ #
     # QGIS plugin lifecycle                                               #
@@ -448,7 +453,11 @@ class VectorizePlugin:
             self._session["raster_name"] = self._topmost_raster_name()
             self._tool.set_session_active(True)
             self._dock.set_session_active(True)
+            self._push_status_bar(
+                "AITracer session active — Enter: accept  |  Esc: cancel  |  Ctrl+Z: undo"
+            )
 
+        self._reset_idle_timer()
         px, py = geo_to_pixel(
             point,
             self._session["mtp"],
@@ -585,6 +594,7 @@ class VectorizePlugin:
         if not self._session["prompt_history"]:
             return
 
+        self._reset_idle_timer()
         self._session["prompt_history"].pop()
 
         # Rebuild the typed lists from the remaining history.
@@ -632,9 +642,44 @@ class VectorizePlugin:
         if self._dock:
             self._dock.set_status("Cancelled. Left-click to segment.")
 
+    # ------------------------------------------------------------------ #
+    # Idle timeout                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _reset_idle_timer(self):
+        """Restart the 5-minute idle countdown after every user interaction."""
+        self._idle_timer.start()
+
+    def _clear_idle_timer(self):
+        self._idle_timer.stop()
+
+    def _on_idle_timeout(self):
+        if not self._session.get("active"):
+            return
+        _log("Session idle for 5 minutes — auto-cancelling.")
+        self._iface.messageBar().pushMessage(
+            PLUGIN_NAME,
+            "AITracer session cancelled after 5 minutes of inactivity.",
+            level=Qgis.MessageLevel.Info, duration=6,
+        )
+        self._on_cancel()
+
+    # ------------------------------------------------------------------ #
+    # Status bar                                                          #
+    # ------------------------------------------------------------------ #
+
+    def _push_status_bar(self, text: str):
+        """Show a persistent message in the QGIS status bar."""
+        self._iface.statusBarIface().showMessage(text)
+
+    def _clear_status_bar(self):
+        self._iface.statusBarIface().clearMessage()
+
     def _end_session(self):
         self._restore_cursor()
         self._discard_worker()
+        self._clear_idle_timer()
+        self._clear_status_bar()
         self._overlay.clear()
         self._session = _empty_session()
         if self._tool:
