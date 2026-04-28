@@ -1,5 +1,10 @@
-import urllib.request
-import urllib.error
+"""Backend client for the AITracer local SAM2 server.
+
+Uses http.client.HTTPConnection (plain TCP to localhost) instead of
+urllib.request.urlopen so that static-analysis tools (Bandit B310) have
+nothing to flag — there is no URL-scheme handling in http.client.
+"""
+import http.client
 import json
 
 # Port is set at runtime by main.py after finding a free port.
@@ -18,21 +23,19 @@ def set_port(port: int) -> None:
     _port = port
 
 
-def _url(path: str) -> str:
-    return f"http://localhost:{_port}{path}"
+def _get(path: str, timeout: float) -> http.client.HTTPResponse:
+    """Open a GET request to localhost and return the response."""
+    conn = http.client.HTTPConnection("localhost", _port, timeout=timeout)
+    conn.request("GET", path)
+    return conn.getresponse()
 
 
-def _safe_urlopen(url_or_req, timeout: float):
-    """Wrapper around urlopen that asserts the target is always localhost HTTP.
-
-    This satisfies static-analysis tools (e.g. Bandit B310) that flag
-    urllib.request.urlopen for potentially accepting file:/ or custom schemes.
-    The backend is a local subprocess — only http://localhost is ever valid.
-    """
-    raw_url = url_or_req if isinstance(url_or_req, str) else url_or_req.full_url
-    if not raw_url.startswith("http://localhost:"):
-        raise ValueError(f"Refusing non-localhost URL: {raw_url}")
-    return urllib.request.urlopen(url_or_req, timeout=timeout)  # noqa: S310
+def _post(path: str, body: bytes, timeout: float) -> http.client.HTTPResponse:
+    """Open a POST request to localhost and return the response."""
+    conn = http.client.HTTPConnection("localhost", _port, timeout=timeout)
+    conn.request("POST", path, body=body,
+                 headers={"Content-Type": "application/json"})
+    return conn.getresponse()
 
 
 def health_check(expected_version: str | None = None) -> bool:
@@ -43,13 +46,13 @@ def health_check(expected_version: str | None = None) -> bool:
     over from a previous plugin version answering on the same port.
     """
     try:
-        with _safe_urlopen(_url("/health"), timeout=3) as r:
-            if r.status != 200:
-                return False
-            data = json.loads(r.read())
-            if expected_version and data.get("version") != expected_version:
-                return False
-            return data.get("status") == "ok"
+        r = _get("/health", timeout=3)
+        if r.status != 200:
+            return False
+        data = json.loads(r.read())
+        if expected_version and data.get("version") != expected_version:
+            return False
+        return data.get("status") == "ok"
     except Exception:
         return False
 
@@ -71,35 +74,25 @@ def segment(image_b64: str | None,
     if session_id is not None:
         payload["session_id"] = session_id
 
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        _url("/segment"),
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    body = json.dumps(payload).encode()
     try:
-        with _safe_urlopen(req, timeout=TIMEOUT) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")
-        raise BackendError(f"HTTP {e.code}: {body}")
-    except urllib.error.URLError as e:
-        raise BackendError(f"Cannot reach backend: {e.reason}")
+        r = _post("/segment", body, timeout=TIMEOUT)
+        raw = r.read()
+        if r.status != 200:
+            raise BackendError(f"HTTP {r.status}: {raw.decode(errors='replace')}")
+        return json.loads(raw)
+    except BackendError:
+        raise
+    except OSError as e:
+        raise BackendError(f"Cannot reach backend: {e}")
     except TimeoutError:
         raise BackendError("Request timed out.")
 
 
 def clear_session(session_id: str) -> None:
     """Notify the backend to evict a cached session (best-effort)."""
-    payload = json.dumps({"session_id": session_id}).encode()
-    req = urllib.request.Request(
-        _url("/clear"),
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    body = json.dumps({"session_id": session_id}).encode()
     try:
-        _safe_urlopen(req, timeout=3)
+        _post("/clear", body, timeout=3)
     except Exception:
         pass  # best-effort, never raise
