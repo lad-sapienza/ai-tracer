@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.18"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.19"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -254,15 +254,20 @@ class VectorizePlugin:
         # must bootstrap pip manually via ensurepip instead of letting venv
         # install it (venv's pip installer calls python3.exe internally).
         # On macOS/Linux venv bundles pip cleanly — no manual bootstrap needed.
+        # Use "python -m pip" everywhere instead of the pip[.exe] script.
+        # On Windows, ensurepip may only create pip3.exe / pip3.12.exe in
+        # Scripts\ — pip.exe is not guaranteed. python -m pip always works
+        # as long as pip is installed in the venv.
+        venv_python = str(_venv("python"))
         if sys.platform == "win32":
             steps = [
                 ([python, "-m", "venv", "--without-pip", str(VENV_DIR)],
                  "Creating virtual environment…", None),
-                ([str(_venv("python")), "-m", "ensurepip", "--upgrade"],
+                ([venv_python, "-m", "ensurepip", "--upgrade"],
                  "Bootstrapping pip…", None),
-                ([str(_venv("pip")), "install", "--upgrade", "pip"],
+                ([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
                  "Upgrading pip…", None),
-                ([str(_venv("pip")), "install", "-r",
+                ([venv_python, "-m", "pip", "install", "-r",
                   str(BACKEND_DIR / "requirements.txt")],
                  "Installing dependencies (this may take several minutes)…",
                  str(BACKEND_DIR)),
@@ -271,9 +276,9 @@ class VectorizePlugin:
             steps = [
                 ([python, "-m", "venv", str(VENV_DIR)],
                  "Creating virtual environment…", None),
-                ([str(_venv("pip")), "install", "--upgrade", "pip"],
+                ([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
                  "Upgrading pip…", None),
-                ([str(_venv("pip")), "install", "-r",
+                ([venv_python, "-m", "pip", "install", "-r",
                   str(BACKEND_DIR / "requirements.txt")],
                  "Installing dependencies (this may take several minutes)…",
                  str(BACKEND_DIR)),
@@ -283,6 +288,7 @@ class VectorizePlugin:
             if dlg.wasCanceled():
                 dlg.close()
                 return False
+            _log(f"Running: {' '.join(str(c) for c in cmd)}")
             dlg.setLabelText(label)
             QApplication.processEvents()
 
@@ -292,7 +298,18 @@ class VectorizePlugin:
             if sys.platform == "win32":
                 run_kwargs["startupinfo"] = _win_startupinfo()
 
-            result = subprocess.run(cmd, **run_kwargs)
+            try:
+                result = subprocess.run(cmd, **run_kwargs)
+            except FileNotFoundError as exc:
+                dlg.close()
+                msg = f"Executable not found during '{label}': {exc}\nCommand: {cmd[0]}"
+                _log(msg, Qgis.MessageLevel.Critical)
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME, msg,
+                    level=Qgis.MessageLevel.Critical, duration=15,
+                )
+                return False
+
             out = (result.stderr.decode(errors="replace")
                    or result.stdout.decode(errors="replace"))
             _log(f"{label}\n{out[:500]}")
