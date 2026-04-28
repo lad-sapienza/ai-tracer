@@ -60,8 +60,9 @@ class SegmentationTool(QgsMapTool):
                 event.accept()
                 self.cancel_requested.emit()
                 return
-            if (event.key() == Qt.Key.Key_Z and
-                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            key_z = event.key() == Qt.Key.Key_Z
+            ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if key_z and ctrl:
                 event.accept()
                 self.undo_requested.emit()
                 return

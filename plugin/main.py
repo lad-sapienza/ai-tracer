@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.24"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.25"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -72,8 +72,8 @@ class _DownloadThread(QThread):
                 capture_output=True, env=env,
             )
             if result.returncode != 0:
-                self.error = (result.stderr.decode(errors="replace") or
-                              "non-zero exit")[:300]
+                err = result.stderr.decode(errors="replace") or "non-zero exit"
+                self.error = err[:300]
         except Exception as exc:
             self.error = str(exc)
 
@@ -99,8 +99,9 @@ class _UndoInterceptor(QObject):
         if etype not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
             return False
 
-        if not (event.key() == Qt.Key.Key_Z and
-                event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+        key_z = event.key() == Qt.Key.Key_Z
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if not (key_z and ctrl):
             return False
 
         if etype == QEvent.Type.ShortcutOverride:
@@ -347,8 +348,8 @@ class VectorizePlugin:
                 )
                 return False, None
 
-            out = (result.stderr.decode(errors="replace") or
-                   result.stdout.decode(errors="replace"))
+            out = (result.stderr.decode(errors="replace")
+                   or result.stdout.decode(errors="replace"))
             _log(f"{label}\n{out[:500]}")
             if result.returncode != 0:
                 dlg.close()
@@ -426,7 +427,6 @@ class VectorizePlugin:
             dlg.setMinimumWidth(340)
             dlg.setModal(True)
             dlg.show()
-            owned_dlg = True
 
         def _close_dlg():
             try:
@@ -545,9 +545,10 @@ class VectorizePlugin:
     def _find_aitracer_layer(self):
         """Return the existing AITracer memory layer, or None."""
         for layer in QgsProject.instance().mapLayersByName(TEMP_LAYER_NAME):
-            if (isinstance(layer, QgsVectorLayer) and
-                    layer.geometryType() == Qgis.GeometryType.Polygon and
-                    layer.dataProvider().name() == "memory"):
+            is_poly_mem = (isinstance(layer, QgsVectorLayer)
+                           and layer.geometryType() == Qgis.GeometryType.Polygon
+                           and layer.dataProvider().name() == "memory")
+            if is_poly_mem:
                 return layer
         return None
 
