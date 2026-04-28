@@ -175,6 +175,8 @@ class AITracerDock(QDockWidget):
 
         ctrl.addStretch()
 
+        ctrl.addWidget(_hline())
+
         # Reset installation (troubleshooting)
         self._reset_btn = QPushButton("⟳  Reset installation")
         self._reset_btn.setToolTip(
@@ -182,8 +184,12 @@ class AITracerDock(QDockWidget):
             "Use this if the backend fails to start after an update or a failed install.\n"
             "The standalone Python (~/.aitracer/python_standalone) is kept."
         )
-        self._reset_btn.setStyleSheet("color: gray; font-size: 10px;")
-        self._reset_btn.setFlat(True)
+        self._reset_btn.setStyleSheet(
+            "QPushButton { color: darkred; font-weight: bold; "
+            "border: 1px solid darkred; border-radius: 3px; padding: 4px 8px; }"
+            "QPushButton:hover { background-color: #ffeaea; }"
+            "QPushButton:pressed { background-color: #ffcccc; }"
+        )
         self._reset_btn.clicked.connect(self.reset_requested)
         ctrl.addWidget(self._reset_btn)
 
