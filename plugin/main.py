@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.21"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.22"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -45,6 +45,37 @@ def _venv(name: str) -> Path:
 
 def _log(msg, level=Qgis.MessageLevel.Info):
     QgsMessageLog.logMessage(msg, PLUGIN_NAME, level)
+
+
+class _DownloadThread(QThread):
+    """Downloads SAM2 weights in the background so the UI stays responsive."""
+
+    def __init__(self, python_exe: str, dest_path: str):
+        super().__init__()
+        self._python = python_exe
+        self._dest = dest_path
+        self.error: str = ""
+
+    def run(self):
+        script = (
+            "import urllib.request; "
+            "urllib.request.urlretrieve("
+            "'https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
+            "sam2.1_hiera_tiny.pt',"
+            f"'{self._dest}'"
+            ")"
+        )
+        env = _clean_env()
+        try:
+            result = subprocess.run(
+                [self._python, "-c", script],
+                capture_output=True, env=env,
+            )
+            if result.returncode != 0:
+                self.error = (result.stderr.decode(errors="replace") or
+                              "non-zero exit")[:300]
+        except Exception as exc:
+            self.error = str(exc)
 
 
 class _UndoInterceptor(QObject):
@@ -321,41 +352,42 @@ class VectorizePlugin:
                 return False
 
         # ── Step 3: model weights ──────────────────────────────────────────
-        dlg.setLabelText("Downloading SAM2-tiny weights (~40 MB)…")
-        QApplication.processEvents()
-        if not self._download_weights():
-            dlg.close()
-            return False
-
-        dlg.close()
-        return True
-
-    def _download_weights(self) -> bool:
         weights_dir = BACKEND_DIR / "weights"
         weights_dir.mkdir(exist_ok=True)
         checkpoint = weights_dir / "sam2.1_hiera_tiny.pt"
-        if checkpoint.exists():
-            return True
+        if not checkpoint.exists():
+            if dlg.wasCanceled():
+                dlg.close()
+                return False
+            dlg.setLabelText("Downloading SAM2-tiny weights (~40 MB)…")
+            QApplication.processEvents()
 
-        python = _venv("python")
-        script = (
-            "import urllib.request; "
-            "urllib.request.urlretrieve("
-            "'https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt',"
-            f"'{checkpoint}'"
-            ")"
-        )
-        run_kw: dict = {"capture_output": True, "env": _clean_env()}
-        if sys.platform == "win32":
-            run_kw["startupinfo"] = _win_startupinfo()
-        result = subprocess.run([str(python), "-c", script], **run_kw)
-        if result.returncode != 0:
-            self._iface.messageBar().pushMessage(
-                PLUGIN_NAME,
-                "Failed to download model weights. Check your internet connection.",
-                level=Qgis.MessageLevel.Critical, duration=10
+            # Run the download in a background thread so the modal dialog
+            # keeps updating and processEvents() continues to fire. This
+            # prevents Qt from queuing up user events during the download
+            # that would later be replayed unexpectedly during backend startup.
+            dl_thread = _DownloadThread(
+                str(_venv("python")), str(checkpoint)
             )
-            return False
+            dl_thread.start()
+            while dl_thread.isRunning():
+                if dlg.wasCanceled():
+                    dl_thread.wait(3000)
+                    dlg.close()
+                    return False
+                QApplication.processEvents()
+                dl_thread.wait(200)   # wake every 200ms to update UI
+
+            if dl_thread.error:
+                dlg.close()
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME,
+                    f"Failed to download model weights: {dl_thread.error}",
+                    level=Qgis.MessageLevel.Critical, duration=10,
+                )
+                return False
+
+        dlg.close()
         return True
 
     def _start_backend(self) -> bool:
@@ -500,6 +532,8 @@ class VectorizePlugin:
     # ------------------------------------------------------------------ #
 
     def _on_canvas_clicked(self, point, is_negative: bool):
+        if self._dock is None:
+            return   # plugin is being unloaded — ignore stale events
         if not self._session["active"]:
             self._session = _empty_session()
             self._session["active"] = True
