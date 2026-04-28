@@ -7,7 +7,7 @@ from model import SegmentationModel
 
 # Must match PLUGIN_VERSION in plugin/main.py — used to detect stale
 # uvicorn processes left over from a previous plugin version.
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 
 _model: SegmentationModel | None = None
 

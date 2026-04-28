@@ -14,7 +14,7 @@ from qgis.core import (
     QgsFillSymbol, QgsSingleSymbolRenderer,
 )
 from qgis.gui import QgsMapToolPan
-from qgis.PyQt.QtCore import Qt, QThread
+from qgis.PyQt.QtCore import Qt, QEvent, QObject, QThread
 from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
 
 from .map_tool import SegmentationTool
@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.7"        # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.8"        # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -46,6 +46,42 @@ def _venv(name: str) -> Path:
 
 def _log(msg, level=Qgis.MessageLevel.Info):
     QgsMessageLog.logMessage(msg, PLUGIN_NAME, level)
+
+
+class _UndoInterceptor(QObject):
+    """Application-level event filter that intercepts Ctrl/Cmd+Z when an
+    AITracer session is active.
+
+    Installed on QApplication so it fires *before* QGIS's own undo action,
+    letting us consume the event entirely and preventing the layer undo stack
+    from also running.
+    """
+
+    def __init__(self, plugin: "VectorizePlugin"):
+        super().__init__()
+        self._plugin = plugin
+
+    def eventFilter(self, obj, event) -> bool:
+        if not self._plugin._session.get("active"):
+            return False
+
+        etype = event.type()
+        if etype not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
+            return False
+
+        if not (event.key() == Qt.Key.Key_Z
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            return False
+
+        if etype == QEvent.Type.ShortcutOverride:
+            # Claim the shortcut: Qt will deliver it as a normal KeyPress
+            # instead of firing QGIS's registered undo QShortcut.
+            event.accept()
+            return False  # don't consume — let it become a KeyPress
+
+        # KeyPress — run our undo and swallow the event entirely.
+        self._plugin._on_undo()
+        return True
 
 
 class VectorizePlugin:
@@ -67,6 +103,8 @@ class VectorizePlugin:
         # Without this, Python's GC can free the objects while Qt is still
         # using them, causing a segfault.
         self._live_threads: list = []
+        self._undo_interceptor = _UndoInterceptor(self)
+        QApplication.instance().installEventFilter(self._undo_interceptor)
 
     # ------------------------------------------------------------------ #
     # QGIS plugin lifecycle                                               #
@@ -87,12 +125,12 @@ class VectorizePlugin:
         self._dock.simplify_changed.connect(self._on_simplify_changed)
         self._dock.tool_toggled.connect(self._toggle_tool)
         self._dock.reset_requested.connect(self._on_reset_backend)
-        self._dock.undo_requested.connect(self._on_undo)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
 
         self._dock.set_status("Activate the tool to start segmentation.")
 
     def unload(self):
+        QApplication.instance().removeEventFilter(self._undo_interceptor)
         self._on_cancel()
         # Wait briefly for any in-flight thread to finish before unloading.
         for _worker, thread in list(self._live_threads):
@@ -416,6 +454,7 @@ class VectorizePlugin:
             self._session["mtp"],
             self._session["dpr"],
         )
+        self._session["prompt_history"].append((is_negative, [px, py]))
         if is_negative:
             self._session["negative_points"].append([px, py])
         else:
@@ -535,23 +574,32 @@ class VectorizePlugin:
             self._update_preview()
 
     def _on_undo(self):
-        """Remove the most recently added prompt point and re-segment."""
+        """Remove the most recently added prompt point and re-segment.
+
+        Uses prompt_history (flat, chronological) so that undo always
+        removes the last click regardless of whether it was positive or
+        negative — matching the user's expected Cmd/Ctrl+Z behaviour.
+        """
         if not self._session["active"]:
             return
-        # Prefer undoing negative points first (they were added last).
-        if self._session["negative_points"]:
-            self._session["negative_points"].pop()
-        elif self._session["positive_points"]:
-            self._session["positive_points"].pop()
-        else:
+        if not self._session["prompt_history"]:
             return
 
-        if (not self._session["positive_points"]
-                and not self._session["negative_points"]):
-            # No points left — clear the preview but keep the session open.
+        self._session["prompt_history"].pop()
+
+        # Rebuild the typed lists from the remaining history.
+        self._session["positive_points"] = [
+            p for neg, p in self._session["prompt_history"] if not neg
+        ]
+        self._session["negative_points"] = [
+            p for neg, p in self._session["prompt_history"] if neg
+        ]
+
+        if not self._session["prompt_history"]:
+            # No points left — clear preview, keep session alive so the
+            # next click reuses the cached image embedding on the backend.
             self._restore_cursor()
             self._discard_worker()
-            self._session["session_id"] = None
             self._session["raw_polygon_geo"] = []
             self._session["current_polygon_geo"] = []
             self._overlay.clear()
@@ -682,6 +730,10 @@ def _empty_session() -> dict:
         "canvas_image_b64": None,
         "mtp": None,   # QgsMapToPixel — handles rotation + HiDPI
         "dpr": 1.0,    # device pixel ratio
+        # prompt_history is the single source of truth for click order:
+        # list of (is_negative: bool, [x, y]) in chronological order.
+        # positive_points and negative_points are derived from it.
+        "prompt_history": [],
         "positive_points": [],
         "negative_points": [],
         "raw_polygon_geo": [],
