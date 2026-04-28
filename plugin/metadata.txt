@@ -1,15 +1,23 @@
 [general]
 name=AITracer by LAD
-description=AI-powered human-in-the-loop raster digitization for archaeologists, by LAD. Click on any raster feature — SAM2 segments it instantly. Refine with positive/negative prompts, adjust polygon simplification, then accept to create a vector feature. Designed for field archaeologists and GIS specialists working with aerial, drone, or scanned raster imagery.
+description=Click any feature on a georeferenced raster and SAM2 segments it instantly. Refine with positive/negative prompts, then accept to create a vector polygon. All processing runs locally — by LAD, Sapienza University of Rome.
 version=0.1.13
 qgisMinimumVersion=4.0
-about=AITracer by LAD brings AI-powered raster digitization to QGIS 4.
-    Click on any feature in a georeferenced raster — aerial photo, drone
-    orthophoto, scanned plan — and SAM2 segments it instantly. Refine
-    with positive/negative point prompts, adjust polygon simplification,
-    then accept to create a vector feature. All processing runs locally;
-    no data is sent to external servers. Requires Python ≥ 3.10 (downloaded
-    automatically on first use via python-build-standalone).
+about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
+
+    Activate the tool, click any feature in a georeferenced raster —
+    aerial photo, drone orthophoto, scanned plan — and the SAM2-tiny
+    model segments it instantly as a polygon preview. Refine the result
+    with positive or negative point prompts, adjust Douglas-Peucker
+    simplification, then accept to add the polygon to any vector layer.
+
+    First-time setup automatically downloads a standalone Python runtime
+    and the SAM2-tiny model weights (~40 MB). An internet connection is
+    required for this one-time step only. All subsequent processing runs
+    entirely on your machine; no data is ever sent to external servers.
+
+    Developed by LAD — Laboratorio di Archeologia Digitale,
+    Sapienza University of Rome.
 author=Julian Bogdani | LAD – Laboratorio di Archeologia Digitale, Sapienza University of Rome
 email=julian.bogdani@uniroma1.it
 homepage=https://github.com/lad-sapienza/ai-tracer
