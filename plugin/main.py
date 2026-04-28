@@ -1,4 +1,3 @@
-import base64
 import os
 import shutil
 import socket
@@ -24,11 +23,10 @@ from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
 from .dock import AITracerDock
 from . import backend_client
-from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.20"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.21"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -70,8 +68,8 @@ class _UndoInterceptor(QObject):
         if etype not in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
             return False
 
-        if not (event.key() == Qt.Key.Key_Z
-                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+        if not (event.key() == Qt.Key.Key_Z and
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             return False
 
         if etype == QEvent.Type.ShortcutOverride:
@@ -310,8 +308,8 @@ class VectorizePlugin:
                 )
                 return False
 
-            out = (result.stderr.decode(errors="replace")
-                   or result.stdout.decode(errors="replace"))
+            out = (result.stderr.decode(errors="replace") or
+                   result.stdout.decode(errors="replace"))
             _log(f"{label}\n{out[:500]}")
             if result.returncode != 0:
                 dlg.close()
@@ -465,9 +463,9 @@ class VectorizePlugin:
     def _find_aitracer_layer(self):
         """Return the existing AITracer memory layer, or None."""
         for layer in QgsProject.instance().mapLayersByName(TEMP_LAYER_NAME):
-            if (isinstance(layer, QgsVectorLayer)
-                    and layer.geometryType() == Qgis.GeometryType.Polygon
-                    and layer.dataProvider().name() == "memory"):
+            if (isinstance(layer, QgsVectorLayer) and
+                    layer.geometryType() == Qgis.GeometryType.Polygon and
+                    layer.dataProvider().name() == "memory"):
                 return layer
         return None
 

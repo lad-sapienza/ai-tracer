@@ -1,4 +1,4 @@
-from qgis.core import Qgis, QgsGeometry, QgsPointXY
+from qgis.core import Qgis, QgsGeometry
 from qgis.gui import QgsMapCanvas, QgsRubberBand
 from qgis.PyQt.QtGui import QColor
 

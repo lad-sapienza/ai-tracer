@@ -23,6 +23,7 @@ rsync -a \
       --exclude='*.pyc' \
       --exclude='*.pyo' \
       --exclude='.DS_Store' \
+      --exclude='.gitkeep' \
       --exclude='backend/weights/*.pt' \
       --exclude='backend/weights/*.pth' \
       --exclude='backend/weights/*.safetensors' \
@@ -32,14 +33,14 @@ rsync -a \
 find "${STAGING}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "${STAGING}" -name '*.pyc' -delete 2>/dev/null || true
 find "${STAGING}" -name '*.pyo' -delete 2>/dev/null || true
+find "${STAGING}" -name '.gitkeep' -delete 2>/dev/null || true
 # Model weights are large and downloaded at runtime — never ship them.
 find "${STAGING}/backend/weights" \
      \( -name '*.pt' -o -name '*.pth' -o -name '*.safetensors' \) \
      -delete 2>/dev/null || true
 
-# Ensure the weights directory placeholder is present.
+# Ensure the weights directory exists (QGIS plugin zip must include it).
 mkdir -p "${STAGING}/backend/weights"
-touch    "${STAGING}/backend/weights/.gitkeep"
 
 # Copy repo-level docs into the zip.
 cp README.md LICENSE "${STAGING}/"

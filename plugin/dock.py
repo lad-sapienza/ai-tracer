@@ -206,7 +206,7 @@ class AITracerDock(QDockWidget):
         for label, url in [
             ("GitHub", "https://github.com/lad-sapienza/ai-tracer"),
             ("Issues", "https://github.com/lad-sapienza/ai-tracer/issues"),
-            ("Info",   "https://lad.saras.uniroma1.it/blog/ai-tracer"),
+            ("Info", "https://lad.saras.uniroma1.it/blog/ai-tracer"),
         ]:
             lnk = QLabel(f'<a href="{url}">{label}</a>')
             lnk.setOpenExternalLinks(True)

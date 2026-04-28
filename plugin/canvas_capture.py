@@ -1,5 +1,4 @@
 import base64
-from io import BytesIO
 
 from qgis.gui import QgsMapCanvas
 from qgis.PyQt.QtGui import QImage
@@ -9,7 +8,6 @@ def capture(canvas: QgsMapCanvas) -> bytes:
     """Capture the current map canvas as raw PNG bytes."""
     pixmap = canvas.grab()
     image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
-    buf = BytesIO()
     # Save via QImage to get proper PNG bytes
     from qgis.PyQt.QtCore import QBuffer, QIODevice
     qbuf = QBuffer()
