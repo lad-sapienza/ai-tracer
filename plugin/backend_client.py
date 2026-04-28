@@ -23,21 +23,6 @@ def set_port(port: int) -> None:
     _port = port
 
 
-def _get(path: str, timeout: float) -> http.client.HTTPResponse:
-    """Open a GET request to localhost and return the response."""
-    conn = http.client.HTTPConnection("localhost", _port, timeout=timeout)
-    conn.request("GET", path)
-    return conn.getresponse()
-
-
-def _post(path: str, body: bytes, timeout: float) -> http.client.HTTPResponse:
-    """Open a POST request to localhost and return the response."""
-    conn = http.client.HTTPConnection("localhost", _port, timeout=timeout)
-    conn.request("POST", path, body=body,
-                 headers={"Content-Type": "application/json"})
-    return conn.getresponse()
-
-
 def health_check(expected_version: str | None = None) -> bool:
     """Return True if the backend is reachable, healthy, and (optionally)
     running the expected plugin version.
@@ -45,8 +30,11 @@ def health_check(expected_version: str | None = None) -> bool:
     Passing *expected_version* guards against a stale uvicorn process left
     over from a previous plugin version answering on the same port.
     """
+    conn = None
     try:
-        r = _get("/health", timeout=3)
+        conn = http.client.HTTPConnection("localhost", _port, timeout=3)
+        conn.request("GET", "/health")
+        r = conn.getresponse()
         if r.status != 200:
             return False
         data = json.loads(r.read())
@@ -55,6 +43,9 @@ def health_check(expected_version: str | None = None) -> bool:
         return data.get("status") == "ok"
     except Exception:
         return False
+    finally:
+        if conn:
+            conn.close()
 
 
 def segment(image_b64: str | None,
@@ -75,8 +66,12 @@ def segment(image_b64: str | None,
         payload["session_id"] = session_id
 
     body = json.dumps(payload).encode()
+    conn = None
     try:
-        r = _post("/segment", body, timeout=TIMEOUT)
+        conn = http.client.HTTPConnection("localhost", _port, timeout=TIMEOUT)
+        conn.request("POST", "/segment", body=body,
+                     headers={"Content-Type": "application/json"})
+        r = conn.getresponse()
         raw = r.read()
         if r.status != 200:
             raise BackendError(f"HTTP {r.status}: {raw.decode(errors='replace')}")
@@ -87,12 +82,22 @@ def segment(image_b64: str | None,
         raise BackendError(f"Cannot reach backend: {e}")
     except TimeoutError:
         raise BackendError("Request timed out.")
+    finally:
+        if conn:
+            conn.close()
 
 
 def clear_session(session_id: str) -> None:
     """Notify the backend to evict a cached session (best-effort)."""
     body = json.dumps({"session_id": session_id}).encode()
+    conn = None
     try:
-        _post("/clear", body, timeout=3)
+        conn = http.client.HTTPConnection("localhost", _port, timeout=3)
+        conn.request("POST", "/clear", body=body,
+                     headers={"Content-Type": "application/json"})
+        conn.getresponse().read()
     except Exception:
         pass  # best-effort, never raise
+    finally:
+        if conn:
+            conn.close()

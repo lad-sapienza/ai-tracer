@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.23"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.24"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -204,15 +204,23 @@ class VectorizePlugin:
         if backend_client.health_check(expected_version=PLUGIN_VERSION):
             return True
 
+        dlg = None
         if not _venv("uvicorn").exists():
-            if not self._run_setup():
+            ok, dlg = self._run_setup()
+            if not ok:
                 return False
+            # dlg is still open — _start_backend will update and close it.
 
-        return self._start_backend()
+        return self._start_backend(dlg=dlg)
 
-    def _run_setup(self) -> bool:
+    def _run_setup(self) -> tuple:
         """Download standalone Python, create venv, install requirements and
-        model weights. Returns True on success."""
+        model weights.
+
+        Returns (True, dlg) on success — the dialog is intentionally left open
+        so _start_backend() can reuse it for the model-load wait phase.
+        Returns (False, None) on failure — the dialog has already been closed.
+        """
         dlg = QProgressDialog(
             "Setting up AITracer backend…", "Cancel", 0, 0,
             self._iface.mainWindow()
@@ -249,7 +257,7 @@ class VectorizePlugin:
 
         if not python_downloader.is_installed():
             if not _install_python():
-                return False
+                return False, None
         else:
             # Python appears installed — verify it actually runs.
             # A stale installation (wrong version, antivirus quarantine, etc.)
@@ -264,7 +272,7 @@ class VectorizePlugin:
                 )
                 shutil.rmtree(python_downloader.STANDALONE_DIR, ignore_errors=True)
                 if not _install_python():
-                    return False
+                    return False, None
 
         python = python_downloader.python_executable()
         _log(f"Using standalone Python: {python}")
@@ -316,7 +324,7 @@ class VectorizePlugin:
         for cmd, label, cwd in steps:
             if dlg.wasCanceled():
                 dlg.close()
-                return False
+                return False, None
             _log(f"Running: {' '.join(str(c) for c in cmd)}")
             dlg.setLabelText(label)
             QApplication.processEvents()
@@ -337,7 +345,7 @@ class VectorizePlugin:
                     PLUGIN_NAME, msg,
                     level=Qgis.MessageLevel.Critical, duration=15,
                 )
-                return False
+                return False, None
 
             out = (result.stderr.decode(errors="replace") or
                    result.stdout.decode(errors="replace"))
@@ -349,7 +357,7 @@ class VectorizePlugin:
                     f"Setup failed at '{label}': {out[:300]}",
                     level=Qgis.MessageLevel.Critical, duration=10,
                 )
-                return False
+                return False, None
 
         # ── Step 3: model weights ──────────────────────────────────────────
         weights_dir = BACKEND_DIR / "weights"
@@ -358,7 +366,7 @@ class VectorizePlugin:
         if not checkpoint.exists():
             if dlg.wasCanceled():
                 dlg.close()
-                return False
+                return False, None
             dlg.setLabelText("Downloading SAM2-tiny weights (~40 MB)…")
             QApplication.processEvents()
 
@@ -374,7 +382,7 @@ class VectorizePlugin:
                 if dlg.wasCanceled():
                     dl_thread.wait(3000)
                     dlg.close()
-                    return False
+                    return False, None
                 QApplication.processEvents()
                 dl_thread.wait(200)   # wake every 200ms to update UI
 
@@ -385,18 +393,46 @@ class VectorizePlugin:
                     f"Failed to download model weights: {dl_thread.error}",
                     level=Qgis.MessageLevel.Critical, duration=10,
                 )
-                return False
+                return False, None
 
-        dlg.close()
-        return True
+        # Leave dialog open — _start_backend() will update label and close it.
+        dlg.setLabelText("Starting AI backend…")
+        QApplication.processEvents()
+        return True, dlg
 
-    def _start_backend(self) -> bool:
-        """Launch the uvicorn subprocess and wait up to 60s for it to be ready."""
+    def _start_backend(self, dlg=None) -> bool:
+        """Launch the uvicorn subprocess and wait up to 60s for it to be ready.
+
+        *dlg* is an optional QProgressDialog passed from _run_setup() so the
+        setup dialog stays visible during the model-load wait instead of
+        disappearing and leaving QGIS looking frozen.  The dialog is closed
+        (success or failure) before this method returns.
+        """
         self._backend_port = _find_free_port()
         backend_client.set_port(self._backend_port)
 
         uvicorn = _venv("uvicorn")
         log_file = VENV_DIR.parent / "backend.log"
+
+        # If no dialog was passed (backend restart without fresh setup),
+        # create a lightweight one so the user sees progress.
+        owned_dlg = False
+        if dlg is None:
+            dlg = QProgressDialog(
+                "Starting AI backend…", None, 0, 0,
+                self._iface.mainWindow()
+            )
+            dlg.setWindowTitle("AITracer")
+            dlg.setMinimumWidth(340)
+            dlg.setModal(True)
+            dlg.show()
+            owned_dlg = True
+
+        def _close_dlg():
+            try:
+                dlg.close()
+            except Exception:
+                pass
 
         popen_kw: dict = {
             "cwd": str(BACKEND_DIR),
@@ -415,6 +451,7 @@ class VectorizePlugin:
                 **popen_kw,
             )
         except OSError as exc:
+            _close_dlg()
             _log(f"Failed to launch backend: {exc}", Qgis.MessageLevel.Critical)
             self._iface.messageBar().pushMessage(
                 PLUGIN_NAME, f"Could not start backend: {exc}",
@@ -425,15 +462,23 @@ class VectorizePlugin:
         _log(f"Backend started on port {self._backend_port} (log: {log_file}), "
              "waiting for readiness…")
 
+        elapsed = 0
         deadline = time.time() + 60  # SAM2 model load can be slow
         while time.time() < deadline:
+            elapsed = int(time.time() - (deadline - 60))
+            dlg.setLabelText(
+                f"Loading AI model… ({elapsed}s)\n"
+                "This may take up to a minute on first run."
+            )
             QApplication.processEvents()  # keep QGIS UI responsive during startup
             # processEvents() can dispatch _stop_backend() if the user
             # deactivates while we are waiting — bail out cleanly.
             if self._backend_proc is None:
+                _close_dlg()
                 return False
             if backend_client.health_check(expected_version=PLUGIN_VERSION):
                 _log("Backend ready.")
+                _close_dlg()
                 return True
             if self._backend_proc.poll() is not None:
                 # Process exited — read log and report
@@ -442,6 +487,7 @@ class VectorizePlugin:
                     log_tail = log_file.read_text()[-600:]
                 except Exception:
                     log_tail = "(could not read log)"
+                _close_dlg()
                 _log(f"Backend crashed:\n{log_tail}", Qgis.MessageLevel.Critical)
                 self._iface.messageBar().pushMessage(
                     PLUGIN_NAME,
@@ -451,6 +497,7 @@ class VectorizePlugin:
                 return False
             time.sleep(0.5)
 
+        _close_dlg()
         self._backend_log.flush()
         self._iface.messageBar().pushMessage(
             PLUGIN_NAME,
