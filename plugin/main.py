@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.26"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.27"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -57,18 +57,19 @@ class _DownloadThread(QThread):
         self.error: str = ""
 
     def run(self):
+        # Pass the destination path as sys.argv[1] rather than embedding it
+        # in the script string — embedding a Windows path with backslashes
+        # causes Python to misparse the escape sequences (e.g. \U, \G).
         script = (
-            "import urllib.request; "
+            "import sys, urllib.request; "
             "urllib.request.urlretrieve("
             "'https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
-            "sam2.1_hiera_tiny.pt',"
-            f"'{self._dest}'"
-            ")"
+            "sam2.1_hiera_tiny.pt', sys.argv[1])"
         )
         env = _clean_env()
         try:
             result = subprocess.run(
-                [self._python, "-c", script],
+                [self._python, "-c", script, self._dest],
                 capture_output=True, env=env,
             )
             if result.returncode != 0:
