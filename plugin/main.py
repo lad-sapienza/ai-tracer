@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.28"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.29"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -59,13 +59,37 @@ class _DownloadThread(QThread):
     def run(self):
         # Pass the destination path as sys.argv[1] rather than embedding it
         # in the script string — embedding a Windows path with backslashes
-        # causes Python to misparse the escape sequences (e.g. \U, \G).
-        script = (
-            "import sys, urllib.request; "
-            "urllib.request.urlretrieve("
-            "'https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
-            "sam2.1_hiera_tiny.pt', sys.argv[1])"
-        )
+        # causes Python to misparse escape sequences (e.g. \U, \G).
+        #
+        # The script tries a normal SSL download first; if that fails (common
+        # on Windows standalone Python which may lack a CA bundle), it retries
+        # with SSL verification disabled and logs a warning.  Any failure exits
+        # with code 1 so the parent process catches it reliably.
+        script = """
+import sys, ssl, urllib.request
+
+URL = ('https://dl.fbaipublicfiles.com/segment_anything_2'
+       '/092824/sam2.1_hiera_tiny.pt')
+dest = sys.argv[1]
+
+def _download(ctx=None):
+    kw = {'context': ctx} if ctx else {}
+    urllib.request.urlretrieve(URL, dest, **kw)
+
+try:
+    _download()
+except Exception as e1:
+    print(f'SSL download failed ({e1}), retrying without verification…',
+          file=sys.stderr, flush=True)
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _download(ctx)
+    except Exception as e2:
+        print(f'Download failed: {e2}', file=sys.stderr, flush=True)
+        sys.exit(1)
+"""
         env = _clean_env()
         try:
             result = subprocess.run(
@@ -394,6 +418,31 @@ class VectorizePlugin:
                     PLUGIN_NAME,
                     f"Failed to download model weights: {dl_thread.error}",
                     level=Qgis.MessageLevel.Critical, duration=10,
+                )
+                return False, None
+
+            # Verify the file actually landed and is not a truncated stub.
+            # On Windows, urlretrieve can succeed (returncode 0, no exception)
+            # but write nothing if the SSL connection is silently dropped.
+            min_size = 10 * 1024 * 1024  # real file is ~160 MB
+            if not checkpoint.exists() or checkpoint.stat().st_size < min_size:
+                checkpoint.unlink(missing_ok=True)
+                manual_url = (
+                    "https://dl.fbaipublicfiles.com/segment_anything_2"
+                    "/092824/sam2.1_hiera_tiny.pt"
+                )
+                dlg.close()
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME,
+                    f"Weight download failed silently (file missing or too small). "
+                    f"Download manually from {manual_url} and place it at: {checkpoint}",
+                    level=Qgis.MessageLevel.Critical, duration=30,
+                )
+                _log(
+                    f"Weight download produced no valid file.\n"
+                    f"Manual download: {manual_url}\n"
+                    f"Destination: {checkpoint}",
+                    Qgis.MessageLevel.Critical,
                 )
                 return False, None
 
