@@ -59,25 +59,29 @@ class AITracerDock(QDockWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        # Header: SVG banner scales to full dock width, preserving aspect ratio
+        # ── Always-visible header ─────────────────────────────────────────
         banner = _SvgBanner(_LOGO_PATH)
         banner.setToolTip("AITracer by LAD — Laboratorio di Archeologia Digitale")
         layout.addWidget(banner)
 
-        # Activate / Deactivate button
         self._toggle_btn = QPushButton("▶  Activate")
         self._toggle_btn.setCheckable(True)
-        self._toggle_btn.setStyleSheet("font-weight: bold;")
         self._toggle_btn.clicked.connect(self._on_toggle_clicked)
+        self._update_toggle_label()
         layout.addWidget(self._toggle_btn)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line)
+        # ── Collapsible controls (hidden until tool is activated) ─────────
+        self._controls = QWidget()
+        ctrl = QVBoxLayout(self._controls)
+        ctrl.setContentsMargins(0, 0, 0, 0)
+        ctrl.setSpacing(6)
 
-        # Simplification slider (0–10 → 0.00–0.50 map units, step 0.05)
-        simplify_layout = QHBoxLayout()
+        ctrl.addWidget(_hline())
+
+        # Simplification slider (0–50 → 0.00–0.50 map units)
+        simplify_row = QWidget()
+        simplify_layout = QHBoxLayout(simplify_row)
+        simplify_layout.setContentsMargins(0, 0, 0, 0)
         simplify_layout.addWidget(QLabel("Simplify:"))
         self._simplify_slider = QSlider(Qt.Orientation.Horizontal)
         self._simplify_slider.setRange(0, 50)
@@ -93,17 +97,13 @@ class AITracerDock(QDockWidget):
         self._simplify_value_label = QLabel("0.00")
         self._simplify_value_label.setFixedWidth(30)
         simplify_layout.addWidget(self._simplify_value_label)
-        layout.addLayout(simplify_layout)
+        ctrl.addWidget(simplify_row)
 
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        line2.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line2)
+        ctrl.addWidget(_hline())
 
         # Output layer selector
-        layout.addWidget(QLabel("Output layer (blank = new AITracer layer):"))
+        ctrl.addWidget(QLabel("Output layer (blank = new AITracer layer):"))
         self._layer_combo = QgsMapLayerComboBox()
-        # Use whichever enum path this QGIS build exposes.
         _poly = getattr(
             QgsMapLayerProxyModel,
             "PolygonLayer",
@@ -112,35 +112,36 @@ class AITracerDock(QDockWidget):
         if _poly is not None:
             self._layer_combo.setFilters(_poly)
         self._layer_combo.setAllowEmptyLayer(True)
-        self._layer_combo.setCurrentIndex(0)   # start on the empty "new layer" entry
+        self._layer_combo.setCurrentIndex(0)
         self._layer_combo.setToolTip(
             "Layer where accepted polygons will be added.\n"
-            "Choose an existing polygon layer or leave as\n"
-            "'new AITracer layer' to auto-create one."
+            "Choose an existing polygon layer or leave blank\n"
+            "to auto-create a new AITracer layer."
         )
         self._layer_combo.layerChanged.connect(
             lambda lyr: self.layer_changed.emit(lyr)
         )
-        layout.addWidget(self._layer_combo)
+        ctrl.addWidget(self._layer_combo)
 
-        line3 = QFrame()
-        line3.setFrameShape(QFrame.Shape.HLine)
-        line3.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line3)
+        ctrl.addWidget(_hline())
 
         # Status
-        self._status_label = QLabel("Activate the tool to start segmentation.")
+        self._status_label = QLabel("Left-click on the raster to start.")
         self._status_label.setWordWrap(True)
-        self._status_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        layout.addWidget(self._status_label)
+        self._status_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        ctrl.addWidget(self._status_label)
 
-        # Confidence (hidden until result arrives)
+        # Confidence (hidden until a result arrives)
         self._confidence_label = QLabel()
         self._confidence_label.setVisible(False)
-        layout.addWidget(self._confidence_label)
+        ctrl.addWidget(self._confidence_label)
 
         # Accept / Cancel
-        btn_layout = QHBoxLayout()
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
         self._accept_btn = QPushButton("Accept")
         self._accept_btn.setEnabled(False)
         self._accept_btn.clicked.connect(self.accepted)
@@ -149,7 +150,7 @@ class AITracerDock(QDockWidget):
         self._cancel_btn.clicked.connect(self.cancelled)
         btn_layout.addWidget(self._accept_btn)
         btn_layout.addWidget(self._cancel_btn)
-        layout.addLayout(btn_layout)
+        ctrl.addWidget(btn_row)
 
         # Tips
         tip = QLabel(
@@ -161,11 +162,11 @@ class AITracerDock(QDockWidget):
         )
         tip.setWordWrap(True)
         tip.setStyleSheet("color: gray; font-size: 10px;")
-        layout.addWidget(tip)
+        ctrl.addWidget(tip)
 
-        layout.addStretch()
+        ctrl.addStretch()
 
-        # Reset installation button (troubleshooting)
+        # Reset installation (troubleshooting)
         self._reset_btn = QPushButton("⟳  Reset installation")
         self._reset_btn.setToolTip(
             "Delete the backend virtual environment and re-run first-time setup.\n"
@@ -175,20 +176,22 @@ class AITracerDock(QDockWidget):
         self._reset_btn.setStyleSheet("color: gray; font-size: 10px;")
         self._reset_btn.setFlat(True)
         self._reset_btn.clicked.connect(self.reset_requested)
-        layout.addWidget(self._reset_btn)
+        ctrl.addWidget(self._reset_btn)
 
-        # Footer links
-        footer_line = QFrame()
-        footer_line.setFrameShape(QFrame.Shape.HLine)
-        footer_line.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(footer_line)
+        self._controls.setVisible(False)
+        layout.addWidget(self._controls)
+
+        # ── Always-visible footer ─────────────────────────────────────────
+        layout.addStretch()
+
+        layout.addWidget(_hline())
 
         footer_layout = QHBoxLayout()
         footer_layout.setSpacing(12)
         for label, url in [
             ("GitHub", "https://github.com/lad-sapienza/ai-tracer"),
             ("Issues", "https://github.com/lad-sapienza/ai-tracer/issues"),
-            ("Info", "https://lad.saras.uniroma1.it/blog/ai-tracer"),
+            ("Info",   "https://lad.saras.uniroma1.it/blog/ai-tracer"),
         ]:
             lnk = QLabel(f'<a href="{url}">{label}</a>')
             lnk.setOpenExternalLinks(True)
@@ -198,7 +201,9 @@ class AITracerDock(QDockWidget):
         if self._version:
             ver_lbl = QLabel(f"AITracer by LAD v{self._version}")
             ver_lbl.setStyleSheet("color: gray; font-size: 10px;")
-            ver_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            ver_lbl.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             footer_layout.addWidget(ver_lbl)
         layout.addLayout(footer_layout)
 
@@ -220,6 +225,9 @@ class AITracerDock(QDockWidget):
         self._sc_cancel.setEnabled(False)
         self._sc_cancel.activated.connect(self.cancelled)
 
+    # ------------------------------------------------------------------ #
+    # Private slots                                                        #
+    # ------------------------------------------------------------------ #
 
     def _on_simplify_slider(self, value: int):
         tolerance = value * 0.01
@@ -237,7 +245,9 @@ class AITracerDock(QDockWidget):
             self._toggle_btn.setStyleSheet("font-weight: bold; color: darkred;")
         else:
             self._toggle_btn.setText("▶  Activate")
-            self._toggle_btn.setStyleSheet("font-weight: bold;")
+            self._toggle_btn.setStyleSheet("font-weight: bold; color: darkgreen;")
+        if hasattr(self, "_controls"):
+            self._controls.setVisible(self._tool_active)
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
@@ -266,6 +276,13 @@ class AITracerDock(QDockWidget):
         """Return the chosen output QgsVectorLayer, or None for 'new layer'."""
         return self._layer_combo.currentLayer()
 
+    def select_layer(self, layer):
+        """Pre-select *layer* in the output combo. Pass None for the blank entry."""
+        if layer is None:
+            self._layer_combo.setCurrentIndex(0)
+        else:
+            self._layer_combo.setLayer(layer)
+
     def set_session_active(self, active: bool):
         self._accept_btn.setEnabled(active)
         self._cancel_btn.setEnabled(active)
@@ -274,3 +291,14 @@ class AITracerDock(QDockWidget):
         self._sc_cancel.setEnabled(active)
         if not active:
             self.set_confidence(None)
+
+
+# ------------------------------------------------------------------ #
+# Helper                                                              #
+# ------------------------------------------------------------------ #
+
+def _hline() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.HLine)
+    f.setFrameShadow(QFrame.Shadow.Sunken)
+    return f

@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.11"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.13"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -159,6 +159,8 @@ class VectorizePlugin:
             self._prev_tool = self._canvas.mapTool()
             self._canvas.setMapTool(self._tool)
             self._dock.set_status("Left-click to segment. Right-click to exclude.")
+            # Pre-select the AITracer layer in the combo if it already exists.
+            self._dock.select_layer(self._find_aitracer_layer())
         else:
             self._end_session()
             self._canvas.setMapTool(self._prev_tool or QgsMapToolPan(self._canvas))
@@ -409,13 +411,20 @@ class VectorizePlugin:
     # Temp layer management                                               #
     # ------------------------------------------------------------------ #
 
-    def _get_or_create_layer(self):
-        project = QgsProject.instance()
-        for layer in project.mapLayersByName(TEMP_LAYER_NAME):
+    def _find_aitracer_layer(self):
+        """Return the existing AITracer memory layer, or None."""
+        for layer in QgsProject.instance().mapLayersByName(TEMP_LAYER_NAME):
             if (isinstance(layer, QgsVectorLayer)
                     and layer.geometryType() == Qgis.GeometryType.Polygon
                     and layer.dataProvider().name() == "memory"):
                 return layer
+        return None
+
+    def _get_or_create_layer(self):
+        existing = self._find_aitracer_layer()
+        if existing:
+            return existing
+        project = QgsProject.instance()
 
         crs = self._canvas.mapSettings().destinationCrs()
         uri = f"Polygon?crs={crs.authid()}&field=fid:integer&field=timestamp:string&field=raster:string"
@@ -629,6 +638,8 @@ class VectorizePlugin:
         if layer is None:
             return
         self._insert_feature(polygon, layer)
+        # Keep the combo pointing at the output layer for subsequent accepts.
+        self._dock.select_layer(layer)
         sid = self._session.get("session_id")
         if sid:
             backend_client.clear_session(sid)
