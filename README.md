@@ -39,9 +39,10 @@ then accept it as a vector polygon with a single keystroke.
 - **First-time setup is automatic** — the plugin downloads a standalone Python
   runtime, creates a virtual environment, installs all dependencies, and
   downloads the SAM2-tiny weights (~40 MB) the first time you activate the tool
-- **Canvas-as-ROI** — zoom and pan to the area of interest before clicking;
-  the current canvas view is used as the image input, so you implicitly control
-  resolution and context
+- **Canvas-as-input** — the plugin captures a screenshot of the current QGIS
+  canvas and sends it to SAM2; it does *not* read the original raster file.
+  This keeps processing fast and memory-light on modest hardware, but has
+  important consequences described below
 - **Fully local** — all processing runs on your machine; no data is ever sent
   to external servers
 
@@ -117,9 +118,11 @@ button at the bottom of the dock to wipe the venv and reinstall cleanly
    (or **Cancel**) to discard.
 9. Repeat for the next feature. Click **⏹ Deactivate** when done.
 
-> **Tip:** for best segmentation results, keep only the target raster layer
-> visible before activating the tool. Other visible layers can affect the
-> model's image encoding.
+> **Important:** AITracer uses the canvas screenshot as input, not the original
+> raster file. Zoom so the target feature fills the screen before clicking —
+> output resolution depends entirely on your zoom level. See
+> [How image input works](#how-image-input-works--what-you-see-is-what-sam2-gets)
+> for full details.
 
 ### Keyboard shortcuts
 
@@ -130,6 +133,45 @@ button at the bottom of the dock to wipe the venv and reinstall cleanly
 | Ctrl+Z | Undo last prompt point |
 | Enter / Return | Accept polygon |
 | Escape | Cancel current session |
+
+---
+
+## How image input works — what you see is what SAM2 gets
+
+AITracer does **not** read the original raster file. Instead, it takes a
+screenshot of the QGIS canvas at the moment you click, and sends that
+screenshot to the SAM2 model. This is a deliberate design choice: it keeps
+memory usage low and processing fast even on modest hardware — no gigapixel
+raster needs to be loaded into RAM.
+
+This design has three practical consequences you should keep in mind:
+
+### Resolution depends on your zoom level, not the raster
+
+The polygon returned by SAM2 is only as detailed as the pixels visible on
+screen. If you are zoomed out, each screen pixel represents a large ground
+area, and the polygon will have coarse boundaries. Zoom in until the target
+feature fills a large part of the canvas to get the sharpest result.
+
+### Features must be fully visible to be fully traced
+
+Because the input image is a canvas screenshot, any part of a feature that
+lies outside the current view is simply not in the image. If a wall, a plot
+boundary, or any other shape extends beyond the screen edge, only the visible
+portion will be included in the output polygon. Pan and zoom so the entire
+feature is on screen before clicking.
+
+### The canvas is locked during a session — intentionally
+
+After the first click, the canvas extent is frozen until you accept or cancel.
+Panning or zooming would invalidate the coordinate mapping between screen pixels
+(where SAM2 works) and map coordinates (where the polygon must live), producing
+incorrect geometries. The lock is lifted the moment you press Enter or Escape.
+
+> **Workflow tip:** before activating the tool, zoom to the feature you want to
+> digitize, leaving a small margin around it. Make sure the target raster is
+> the only visible layer (other layers affect the screenshot). Then activate,
+> click, refine, and accept.
 
 ---
 

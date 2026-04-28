@@ -11,6 +11,14 @@ about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
     with positive or negative point prompts, adjust Douglas-Peucker
     simplification, then accept to add the polygon to any vector layer.
 
+    HOW IT WORKS: AITracer captures a screenshot of the current QGIS
+    canvas and sends it to SAM2 — it does not read the original raster
+    file. This keeps processing fast and memory-light on modest hardware.
+    The output resolution depends on your zoom level, not the raster
+    resolution. Features that extend beyond the canvas edge will be
+    partially traced. The canvas is locked during a session to keep
+    pixel-to-map coordinates consistent.
+
     First-time setup automatically downloads a standalone Python runtime
     and the SAM2-tiny model weights (~40 MB). An internet connection is
     required for this one-time step only. All subsequent processing runs
