@@ -1,5 +1,5 @@
 fastapi
-uvicorn[standard]
+uvicorn
 # CPU-only PyTorch wheels — must be listed before sam2 so pip sees them
 # as already satisfied when resolving sam2's torch dependency.
 torch --index-url https://download.pytorch.org/whl/cpu
