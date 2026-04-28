@@ -87,8 +87,8 @@ echo ""
 if git rev-parse "v${NEW_VER}" >/dev/null 2>&1; then
     _yellow "Tag v${NEW_VER} already exists — skipping."
 else
-    git tag "v${NEW_VER}"
-    _green "✓ Tagged v${NEW_VER}"
+    git tag -a "v${NEW_VER}" -m "$(printf 'v%s: %s' "${NEW_VER}" "${MSG}")"
+    _green "✓ Tagged v${NEW_VER} (annotated)"
 fi
 echo ""
 

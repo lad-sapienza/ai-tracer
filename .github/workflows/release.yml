@@ -13,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to read annotated tag messages
 
       - name: Extract version from tag
         id: version
@@ -27,12 +29,21 @@ jobs:
             exit 1
           fi
 
+      - name: Extract tag annotation as release body
+        id: tag_body
+        run: |
+          BODY=$(git tag -l --format='%(contents)' ${{ github.ref_name }})
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Build plugin zip
         run: bash package.sh ${{ steps.version.outputs.version }}
 
-      - name: Create draft GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          files: dist/aitracer-${{ steps.version.outputs.version }}.zip
+          draft: false
           name: AITracer by LAD v${{ steps.version.outputs.version }}
+          body: ${{ steps.tag_body.outputs.body }}
+          files: dist/aitracer-${{ steps.version.outputs.version }}.zip
