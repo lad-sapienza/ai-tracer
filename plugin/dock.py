@@ -44,10 +44,11 @@ class AITracerDock(QDockWidget):
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
     layer_changed = pyqtSignal(object)  # emits the selected QgsVectorLayer or None
 
-    def __init__(self, parent=None):
+    def __init__(self, version: str = "", parent=None):
         super().__init__("AITracer by LAD", parent)
         self.setObjectName("AITracerDock")
         self._tool_active = False
+        self._version = version
         self._build_ui()
         self._setup_shortcuts()
         self.setMinimumHeight(400)
@@ -194,6 +195,11 @@ class AITracerDock(QDockWidget):
             lnk.setStyleSheet("font-size: 10px;")
             footer_layout.addWidget(lnk)
         footer_layout.addStretch()
+        if self._version:
+            ver_lbl = QLabel(f"AITracer by LAD v{self._version}")
+            ver_lbl.setStyleSheet("color: gray; font-size: 10px;")
+            ver_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            footer_layout.addWidget(ver_lbl)
         layout.addLayout(footer_layout)
 
         self.setWidget(container)

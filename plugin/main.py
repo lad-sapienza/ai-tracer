@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.10"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.11"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -124,7 +124,7 @@ class VectorizePlugin:
 
         self._overlay = PreviewOverlay(self._canvas)
 
-        self._dock = AITracerDock(self._iface.mainWindow())
+        self._dock = AITracerDock(version=PLUGIN_VERSION, parent=self._iface.mainWindow())
         self._dock.accepted.connect(self._on_accept)
         self._dock.cancelled.connect(self._on_cancel)
         self._dock.simplify_changed.connect(self._on_simplify_changed)
