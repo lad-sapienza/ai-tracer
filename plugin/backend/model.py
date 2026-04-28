@@ -1,5 +1,7 @@
 import base64
+import sys
 import time
+import traceback
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -26,16 +28,31 @@ class SegmentationModel:
                 f"Model checkpoint not found: {checkpoint}\n"
                 f"Run the setup to download it first."
             )
+
         if torch.cuda.is_available():
             device = "cuda"
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"  # Apple Silicon GPU — 3-5× faster than CPU
         else:
             device = "cpu"
-        sam2 = build_sam2(CONFIG_NAME, str(checkpoint), device=device)
+
+        print(f"Loading SAM2-tiny on {device}…  "
+              f"Python {sys.version}  |  torch {torch.__version__}  "
+              f"| checkpoint: {checkpoint}",
+              flush=True)
+
+        try:
+            sam2 = build_sam2(CONFIG_NAME, str(checkpoint), device=device)
+        except Exception:
+            # Print the full traceback to the log so we can diagnose
+            # platform-specific failures (e.g. Hydra config on Windows).
+            print("build_sam2 failed — full traceback:", flush=True)
+            traceback.print_exc()
+            raise
+
         self._predictor = SAM2ImagePredictor(sam2)
         self._sessions: dict[str, dict] = {}  # session_id → {embedding, last_access}
-        print(f"SAM2-tiny loaded on {device}.")
+        print(f"SAM2-tiny loaded on {device}.", flush=True)
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #

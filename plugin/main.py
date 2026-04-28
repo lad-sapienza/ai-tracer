@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.25"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.26"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -484,14 +484,14 @@ class VectorizePlugin:
                 # Process exited — read log and report
                 self._backend_log.flush()
                 try:
-                    log_tail = log_file.read_text()[-600:]
+                    log_tail = log_file.read_text()[-3000:]
                 except Exception:
                     log_tail = "(could not read log)"
                 _close_dlg()
                 _log(f"Backend crashed:\n{log_tail}", Qgis.MessageLevel.Critical)
                 self._iface.messageBar().pushMessage(
                     PLUGIN_NAME,
-                    f"Backend crashed on startup. See Log Messages → AITracer.\n{log_tail[:200]}",
+                    f"Backend crashed on startup. See Log Messages → AITracer.\n{log_tail[:400]}",
                     level=Qgis.MessageLevel.Critical, duration=15
                 )
                 return False
