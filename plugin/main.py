@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.17"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.18"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -360,18 +360,31 @@ class VectorizePlugin:
         if sys.platform == "win32":
             popen_kw["startupinfo"] = _win_startupinfo()
         self._backend_log = popen_kw["stdout"]
-        self._backend_proc = subprocess.Popen(
-            [str(uvicorn), "app:app",
-             "--port", str(self._backend_port),
-             "--log-level", "info"],
-            **popen_kw,
-        )
+        try:
+            self._backend_proc = subprocess.Popen(
+                [str(uvicorn), "app:app",
+                 "--port", str(self._backend_port),
+                 "--log-level", "info"],
+                **popen_kw,
+            )
+        except OSError as exc:
+            _log(f"Failed to launch backend: {exc}", Qgis.MessageLevel.Critical)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME, f"Could not start backend: {exc}",
+                level=Qgis.MessageLevel.Critical, duration=10
+            )
+            return False
+
         _log(f"Backend started on port {self._backend_port} (log: {log_file}), "
              "waiting for readiness…")
 
         deadline = time.time() + 60  # SAM2 model load can be slow
         while time.time() < deadline:
             QApplication.processEvents()  # keep QGIS UI responsive during startup
+            # processEvents() can dispatch _stop_backend() if the user
+            # deactivates while we are waiting — bail out cleanly.
+            if self._backend_proc is None:
+                return False
             if backend_client.health_check(expected_version=PLUGIN_VERSION):
                 _log("Backend ready.")
                 return True
