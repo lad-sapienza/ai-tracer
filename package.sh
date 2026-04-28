@@ -16,29 +16,44 @@ echo "→ Packaging AITracer v${VERSION}"
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
-# Copy plugin source (exclude dev/cache artefacts)
-rsync -a --exclude='__pycache__' \
-         --exclude='*.pyc' \
-         --exclude='*.pyo' \
-         --exclude='.DS_Store' \
-         --exclude='backend/weights/*.pt' \
-         --exclude='backend/weights/*.pth' \
-         --exclude='backend/__pycache__' \
-         plugin/ "${STAGING}/"
+# Copy plugin source.
+# Trailing slash on __pycache__/ tells rsync to match directories only.
+rsync -a \
+      --exclude='__pycache__/' \
+      --exclude='*.pyc' \
+      --exclude='*.pyo' \
+      --exclude='.DS_Store' \
+      --exclude='backend/weights/*.pt' \
+      --exclude='backend/weights/*.pth' \
+      --exclude='backend/weights/*.safetensors' \
+      plugin/ "${STAGING}/"
 
-# Ensure weights placeholder exists
+# Belt-and-suspenders: purge any artefacts rsync may have missed.
+find "${STAGING}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+find "${STAGING}" -name '*.pyc' -delete 2>/dev/null || true
+find "${STAGING}" -name '*.pyo' -delete 2>/dev/null || true
+# Model weights are large and downloaded at runtime — never ship them.
+find "${STAGING}/backend/weights" \
+     \( -name '*.pt' -o -name '*.pth' -o -name '*.safetensors' \) \
+     -delete 2>/dev/null || true
+
+# Ensure the weights directory placeholder is present.
 mkdir -p "${STAGING}/backend/weights"
 touch    "${STAGING}/backend/weights/.gitkeep"
 
-# Copy repo-level docs into the zip
+# Copy repo-level docs into the zip.
 cp README.md LICENSE "${STAGING}/"
 
-# Create the zip (top-level folder = plugin name, required by QGIS)
+# Report staging size before zipping so bloat is immediately visible.
+echo "   Staging size: $(du -sh "${STAGING}" | cut -f1)"
+
+# Create the zip (top-level folder = plugin name, required by QGIS).
 cd "${OUT_DIR}"
-zip -r "${PLUGIN_NAME}-${VERSION}.zip" "${PLUGIN_NAME}" -x "*.DS_Store"
+zip -r "${PLUGIN_NAME}-${VERSION}.zip" "${PLUGIN_NAME}"
 cd ..
 
-# Clean staging
+# Clean staging.
 rm -rf "${STAGING}"
 
-echo "✓ Created ${OUT_DIR}/${PLUGIN_NAME}-${VERSION}.zip"
+ZIP="${OUT_DIR}/${PLUGIN_NAME}-${VERSION}.zip"
+echo "✓ Created ${ZIP} ($(du -sh "${ZIP}" | cut -f1))"
