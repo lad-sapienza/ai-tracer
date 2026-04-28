@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.22"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.23"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -484,6 +484,9 @@ class VectorizePlugin:
         if VENV_DIR.exists():
             shutil.rmtree(VENV_DIR)
             _log("Venv removed by user request.")
+        # Collapse the panel and restore the Activate button so the user
+        # knows they need to click Activate to trigger re-installation.
+        self._dock.set_tool_active(False)
         self._dock.set_status(
             "Installation reset. Press Activate to reinstall."
         )
