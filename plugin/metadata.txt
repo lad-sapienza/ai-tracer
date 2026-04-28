@@ -1,7 +1,7 @@
 [general]
 name=AITracer by LAD
 description=AI-powered human-in-the-loop raster digitization for archaeologists, by LAD. Click on any raster feature — SAM2 segments it instantly. Refine with positive/negative prompts, adjust polygon simplification, then accept to create a vector feature. Designed for field archaeologists and GIS specialists working with aerial, drone, or scanned raster imagery.
-version=0.1.9
+version=0.1.10
 qgisMinimumVersion=4.0
 about=AITracer by LAD brings AI-powered raster digitization to QGIS 4.
     Click on any feature in a georeferenced raster — aerial photo, drone

@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.9"        # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.10"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -624,7 +624,8 @@ class VectorizePlugin:
         polygon = self._session.get("current_polygon_geo")
         if not polygon:
             return
-        layer = self._get_or_create_layer()
+        # Use the dock's layer combo: None means "auto-create AITracer layer".
+        layer = self._dock.selected_layer() or self._get_or_create_layer()
         if layer is None:
             return
         self._insert_feature(polygon, layer)
@@ -695,13 +696,20 @@ class VectorizePlugin:
         if not layer.isEditable():
             layer.startEditing()
 
-        feature = QgsFeature(layer.fields())
+        fields = layer.fields()
+        feature = QgsFeature(fields)
         feature.setGeometry(QgsGeometry.fromPolygonXY([polygon_geo]))
-        existing_fids = [f["fid"] for f in layer.getFeatures() if f["fid"]]
-        next_fid = max(existing_fids, default=0) + 1
-        feature.setAttribute("fid", next_fid)
-        feature.setAttribute("timestamp", datetime.now().isoformat(timespec="seconds"))
-        feature.setAttribute("raster", self._session.get("raster_name", ""))
+
+        # Only set AITracer-specific attributes when the target layer has them
+        # (they exist on the auto-created memory layer but not on user layers).
+        if fields.indexOf("fid") >= 0:
+            existing_fids = [f["fid"] for f in layer.getFeatures() if f["fid"]]
+            feature.setAttribute("fid", max(existing_fids, default=0) + 1)
+        if fields.indexOf("timestamp") >= 0:
+            feature.setAttribute("timestamp",
+                                 datetime.now().isoformat(timespec="seconds"))
+        if fields.indexOf("raster") >= 0:
+            feature.setAttribute("raster", self._session.get("raster_name", ""))
 
         layer.beginEditCommand("Add segmented feature")
         ok = layer.addFeature(feature)

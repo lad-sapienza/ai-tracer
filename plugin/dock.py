@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from qgis.core import QgsMapLayerProxyModel
+from qgis.gui import QgsMapLayerComboBox
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QRectF, QSize
 from qgis.PyQt.QtGui import QKeySequence, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
@@ -40,6 +42,7 @@ class AITracerDock(QDockWidget):
     simplify_changed = pyqtSignal(float)
     tool_toggled = pyqtSignal(bool)   # True = activate, False = deactivate
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
+    layer_changed = pyqtSignal(object)  # emits the selected QgsVectorLayer or None
 
     def __init__(self, parent=None):
         super().__init__("AITracer by LAD", parent)
@@ -95,6 +98,34 @@ class AITracerDock(QDockWidget):
         line2.setFrameShape(QFrame.Shape.HLine)
         line2.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(line2)
+
+        # Output layer selector
+        layout.addWidget(QLabel("Output layer (blank = new AITracer layer):"))
+        self._layer_combo = QgsMapLayerComboBox()
+        # Use whichever enum path this QGIS build exposes.
+        _poly = getattr(
+            QgsMapLayerProxyModel,
+            "PolygonLayer",
+            getattr(getattr(QgsMapLayerProxyModel, "Filter", None), "PolygonLayer", None),
+        )
+        if _poly is not None:
+            self._layer_combo.setFilters(_poly)
+        self._layer_combo.setAllowEmptyLayer(True)
+        self._layer_combo.setCurrentIndex(0)   # start on the empty "new layer" entry
+        self._layer_combo.setToolTip(
+            "Layer where accepted polygons will be added.\n"
+            "Choose an existing polygon layer or leave as\n"
+            "'new AITracer layer' to auto-create one."
+        )
+        self._layer_combo.layerChanged.connect(
+            lambda lyr: self.layer_changed.emit(lyr)
+        )
+        layout.addWidget(self._layer_combo)
+
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.Shape.HLine)
+        line3.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(line3)
 
         # Status
         self._status_label = QLabel("Activate the tool to start segmentation.")
@@ -224,6 +255,10 @@ class AITracerDock(QDockWidget):
         else:
             self._confidence_label.setText(f"Confidence: {value:.0%}")
             self._confidence_label.setVisible(True)
+
+    def selected_layer(self):
+        """Return the chosen output QgsVectorLayer, or None for 'new layer'."""
+        return self._layer_combo.currentLayer()
 
     def set_session_active(self, active: bool):
         self._accept_btn.setEnabled(active)
