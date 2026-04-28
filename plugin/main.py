@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.13"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.14"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -195,11 +195,12 @@ class VectorizePlugin:
         QApplication.processEvents()
 
         # ── Step 1: standalone Python ──────────────────────────────────────
-        if not python_downloader.is_installed():
-            def _progress(pct, msg):
-                dlg.setLabelText(msg)
-                QApplication.processEvents()
+        def _progress(pct, msg):
+            dlg.setLabelText(msg)
+            QApplication.processEvents()
 
+        def _install_python() -> bool:
+            """Download and install standalone Python. Returns True on success."""
             ok, msg = python_downloader.install(
                 progress_cb=_progress,
                 cancel_check=dlg.wasCanceled,
@@ -215,6 +216,26 @@ class VectorizePlugin:
             if dlg.wasCanceled():
                 dlg.close()
                 return False
+            return True
+
+        if not python_downloader.is_installed():
+            if not _install_python():
+                return False
+        else:
+            # Python appears installed — verify it actually runs.
+            # A stale installation (wrong version, antivirus quarantine, etc.)
+            # would cause a cryptic FileNotFoundError in the subprocess step;
+            # catching it here gives a clear message and auto-reinstalls.
+            ok, vmsg = python_downloader.verify()
+            if not ok:
+                _log(
+                    f"Standalone Python is broken ({vmsg}). "
+                    "Removing and reinstalling…",
+                    Qgis.MessageLevel.Warning,
+                )
+                shutil.rmtree(python_downloader.STANDALONE_DIR, ignore_errors=True)
+                if not _install_python():
+                    return False
 
         python = python_downloader.python_executable()
         _log(f"Using standalone Python: {python}")

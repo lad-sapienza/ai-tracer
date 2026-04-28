@@ -24,15 +24,16 @@ from typing import Callable
 # Release manifest                                                    #
 # ------------------------------------------------------------------ #
 
-RELEASE_TAG = "20251014"
+RELEASE_TAG = "20260408"
 
-# (major, minor) → full patch version available in that release
+# (major, minor) → full patch version available in that release.
+# Keep in sync with RELEASE_TAG — check available assets at:
+# https://github.com/astral-sh/python-build-standalone/releases/tag/<RELEASE_TAG>
 _PYTHON_VERSIONS: dict[tuple[int, int], str] = {
-    (3, 9):  "3.9.24",
-    (3, 10): "3.10.19",
-    (3, 11): "3.11.14",
-    (3, 12): "3.12.12",
-    (3, 13): "3.13.9",
+    (3, 10): "3.10.20",
+    (3, 11): "3.11.15",
+    (3, 12): "3.12.13",
+    (3, 13): "3.13.13",
 }
 
 STANDALONE_DIR = os.path.join(os.path.expanduser("~"), ".aitracer", "python_standalone")
