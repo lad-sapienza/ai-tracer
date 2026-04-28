@@ -1,7 +1,7 @@
 [general]
 name=AITracer by LAD
 description=Click any feature on a georeferenced raster and SAM2 segments it instantly. Refine with positive/negative prompts, then accept to create a vector polygon. All processing runs locally — by LAD, Sapienza University of Rome.
-version=0.1.14
+version=0.1.15
 qgisMinimumVersion=4.0
 about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 

@@ -14,25 +14,34 @@ _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
 
 
 class _SvgBanner(QLabel):
-    """QLabel that renders an SVG scaled to its full width, maintaining aspect ratio."""
+    """Renders an SVG at its natural proportional size, centred horizontally."""
 
-    MAX_HEIGHT = 48
+    MAX_HEIGHT = 56
 
     def __init__(self, path: str, parent=None):
         super().__init__(parent)
         self._renderer = QSvgRenderer(path)
         if self._renderer.isValid():
             s = self._renderer.defaultSize()
-            h = self.MAX_HEIGHT
-            w = int(s.width() * h / s.height())
-            self.setFixedSize(w, h)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            if s.height() > 0:
+                h = self.MAX_HEIGHT
+                w = int(s.width() * h / s.height())
+                self._render_size = QSize(w, h)
+            else:
+                self._render_size = QSize(self.MAX_HEIGHT, self.MAX_HEIGHT)
+        else:
+            self._render_size = QSize(self.MAX_HEIGHT, self.MAX_HEIGHT)
+        self.setFixedHeight(self._render_size.height())
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def paintEvent(self, event):
         if self._renderer.isValid():
+            rw = self._render_size.width()
+            rh = self._render_size.height()
+            x = (self.width() - rw) / 2   # centre horizontally
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            self._renderer.render(painter, QRectF(0, 0, self.width(), self.height()))
+            self._renderer.render(painter, QRectF(x, 0, rw, rh))
             painter.end()
 
 

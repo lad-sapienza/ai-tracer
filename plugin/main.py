@@ -28,7 +28,7 @@ from .backend_client import BackendError
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.14"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.15"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
