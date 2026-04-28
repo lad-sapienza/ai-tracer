@@ -22,6 +22,19 @@ def _url(path: str) -> str:
     return f"http://localhost:{_port}{path}"
 
 
+def _safe_urlopen(url_or_req, timeout: float):
+    """Wrapper around urlopen that asserts the target is always localhost HTTP.
+
+    This satisfies static-analysis tools (e.g. Bandit B310) that flag
+    urllib.request.urlopen for potentially accepting file:/ or custom schemes.
+    The backend is a local subprocess — only http://localhost is ever valid.
+    """
+    raw_url = url_or_req if isinstance(url_or_req, str) else url_or_req.full_url
+    if not raw_url.startswith("http://localhost:"):
+        raise ValueError(f"Refusing non-localhost URL: {raw_url}")
+    return urllib.request.urlopen(url_or_req, timeout=timeout)  # noqa: S310
+
+
 def health_check(expected_version: str | None = None) -> bool:
     """Return True if the backend is reachable, healthy, and (optionally)
     running the expected plugin version.
@@ -30,7 +43,7 @@ def health_check(expected_version: str | None = None) -> bool:
     over from a previous plugin version answering on the same port.
     """
     try:
-        with urllib.request.urlopen(_url("/health"), timeout=3) as r:
+        with _safe_urlopen(_url("/health"), timeout=3) as r:
             if r.status != 200:
                 return False
             data = json.loads(r.read())
@@ -66,7 +79,7 @@ def segment(image_b64: str | None,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with _safe_urlopen(req, timeout=TIMEOUT) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
@@ -87,6 +100,6 @@ def clear_session(session_id: str) -> None:
         method="POST",
     )
     try:
-        urllib.request.urlopen(req, timeout=3)
+        _safe_urlopen(req, timeout=3)
     except Exception:
         pass  # best-effort, never raise
