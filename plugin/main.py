@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.29"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.30"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
@@ -45,62 +45,6 @@ def _venv(name: str) -> Path:
 
 def _log(msg, level=Qgis.MessageLevel.Info):
     QgsMessageLog.logMessage(msg, PLUGIN_NAME, level)
-
-
-class _DownloadThread(QThread):
-    """Downloads SAM2 weights in the background so the UI stays responsive."""
-
-    def __init__(self, python_exe: str, dest_path: str):
-        super().__init__()
-        self._python = python_exe
-        self._dest = dest_path
-        self.error: str = ""
-
-    def run(self):
-        # Pass the destination path as sys.argv[1] rather than embedding it
-        # in the script string — embedding a Windows path with backslashes
-        # causes Python to misparse escape sequences (e.g. \U, \G).
-        #
-        # The script tries a normal SSL download first; if that fails (common
-        # on Windows standalone Python which may lack a CA bundle), it retries
-        # with SSL verification disabled and logs a warning.  Any failure exits
-        # with code 1 so the parent process catches it reliably.
-        script = """
-import sys, ssl, urllib.request
-
-URL = ('https://dl.fbaipublicfiles.com/segment_anything_2'
-       '/092824/sam2.1_hiera_tiny.pt')
-dest = sys.argv[1]
-
-def _download(ctx=None):
-    kw = {'context': ctx} if ctx else {}
-    urllib.request.urlretrieve(URL, dest, **kw)
-
-try:
-    _download()
-except Exception as e1:
-    print(f'SSL download failed ({e1}), retrying without verification…',
-          file=sys.stderr, flush=True)
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        _download(ctx)
-    except Exception as e2:
-        print(f'Download failed: {e2}', file=sys.stderr, flush=True)
-        sys.exit(1)
-"""
-        env = _clean_env()
-        try:
-            result = subprocess.run(
-                [self._python, "-c", script, self._dest],
-                capture_output=True, env=env,
-            )
-            if result.returncode != 0:
-                err = result.stderr.decode(errors="replace") or "non-zero exit"
-                self.error = err[:300]
-        except Exception as exc:
-            self.error = str(exc)
 
 
 class _UndoInterceptor(QObject):
@@ -393,56 +337,72 @@ class VectorizePlugin:
             if dlg.wasCanceled():
                 dlg.close()
                 return False, None
-            dlg.setLabelText("Downloading SAM2-tiny weights (~40 MB)…")
+            weights_url = (
+                "https://dl.fbaipublicfiles.com/segment_anything_2"
+                "/092824/sam2.1_hiera_tiny.pt"
+            )
+            dlg.setLabelText("Downloading SAM2-tiny weights (~160 MB)…")
             QApplication.processEvents()
 
-            # Run the download in a background thread so the modal dialog
-            # keeps updating and processEvents() continues to fire. This
-            # prevents Qt from queuing up user events during the download
-            # that would later be replayed unexpectedly during backend startup.
-            dl_thread = _DownloadThread(
-                str(_venv("python")), str(checkpoint)
-            )
-            dl_thread.start()
-            while dl_thread.isRunning():
-                if dlg.wasCanceled():
-                    dl_thread.wait(3000)
-                    dlg.close()
-                    return False, None
-                QApplication.processEvents()
-                dl_thread.wait(200)   # wake every 200ms to update UI
+            # Use QgsBlockingNetworkRequest — the same mechanism used by
+            # python_downloader.py for the standalone Python archive.
+            # This uses Qt's network stack, which correctly picks up the
+            # system SSL certificate store and any QGIS proxy settings,
+            # avoiding the SSL failures that plague urllib on Windows when
+            # running inside a standalone-Python subprocess.
+            from qgis.core import QgsBlockingNetworkRequest
+            from qgis.PyQt.QtCore import QUrl
+            from qgis.PyQt.QtNetwork import QNetworkRequest
 
-            if dl_thread.error:
+            req = QgsBlockingNetworkRequest()
+            err = req.get(QNetworkRequest(QUrl(weights_url)))
+
+            if err != QgsBlockingNetworkRequest.NoError:
                 dlg.close()
+                msg = (
+                    f"Failed to download model weights: {req.errorMessage()}\n"
+                    f"You can download it manually from:\n{weights_url}\n"
+                    f"and copy it to:\n{checkpoint}"
+                )
+                _log(msg, Qgis.MessageLevel.Critical)
                 self._iface.messageBar().pushMessage(
-                    PLUGIN_NAME,
-                    f"Failed to download model weights: {dl_thread.error}",
-                    level=Qgis.MessageLevel.Critical, duration=10,
+                    PLUGIN_NAME, msg,
+                    level=Qgis.MessageLevel.Critical, duration=30,
                 )
                 return False, None
 
-            # Verify the file actually landed and is not a truncated stub.
-            # On Windows, urlretrieve can succeed (returncode 0, no exception)
-            # but write nothing if the SSL connection is silently dropped.
-            min_size = 10 * 1024 * 1024  # real file is ~160 MB
-            if not checkpoint.exists() or checkpoint.stat().st_size < min_size:
-                checkpoint.unlink(missing_ok=True)
-                manual_url = (
-                    "https://dl.fbaipublicfiles.com/segment_anything_2"
-                    "/092824/sam2.1_hiera_tiny.pt"
-                )
+            content = req.reply().content()
+            size = len(content)
+
+            # Verify the download is a plausible size (real file is ~160 MB).
+            min_size = 10 * 1024 * 1024  # 10 MB sanity floor
+            if size < min_size:
                 dlg.close()
+                msg = (
+                    f"Weight download incomplete ({size // 1024} KB — expected ~160 MB). "
+                    f"Check your internet connection.\n"
+                    f"You can also download manually from:\n{weights_url}\n"
+                    f"and copy it to:\n{checkpoint}"
+                )
+                _log(msg, Qgis.MessageLevel.Critical)
                 self._iface.messageBar().pushMessage(
-                    PLUGIN_NAME,
-                    f"Weight download failed silently (file missing or too small). "
-                    f"Download manually from {manual_url} and place it at: {checkpoint}",
+                    PLUGIN_NAME, msg,
                     level=Qgis.MessageLevel.Critical, duration=30,
                 )
-                _log(
-                    f"Weight download produced no valid file.\n"
-                    f"Manual download: {manual_url}\n"
-                    f"Destination: {checkpoint}",
-                    Qgis.MessageLevel.Critical,
+                return False, None
+
+            dlg.setLabelText("Saving model weights…")
+            QApplication.processEvents()
+            try:
+                checkpoint.write_bytes(bytes(content.data()))
+            except Exception as exc:
+                checkpoint.unlink(missing_ok=True)
+                dlg.close()
+                msg = f"Failed to save model weights: {exc}"
+                _log(msg, Qgis.MessageLevel.Critical)
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME, msg,
+                    level=Qgis.MessageLevel.Critical, duration=15,
                 )
                 return False, None
 

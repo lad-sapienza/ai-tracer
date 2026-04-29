@@ -1,5 +1,9 @@
 fastapi
 uvicorn
+# click is a transitive dependency of uvicorn; pin it to avoid an old version
+# being pulled in by another package (causes AttributeError: module 'click'
+# has no attribute 'Choice' on startup).
+click>=8.0
 # CPU-only PyTorch wheels — must be listed before sam2 so pip sees them
 # as already satisfied when resolving sam2's torch dependency.
 torch --index-url https://download.pytorch.org/whl/cpu
