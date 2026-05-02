@@ -1,7 +1,7 @@
 [general]
 name=AITracer by LAD
 description=Click any feature on a georeferenced raster and SAM2 segments it instantly. Refine with positive/negative prompts, then accept to create a vector polygon. All processing runs locally — by LAD, Sapienza University of Rome.
-version=0.1.30
+version=0.1.31
 qgisMinimumVersion=4.0
 about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 
@@ -34,6 +34,6 @@ repository=https://github.com/lad-sapienza/ai-tracer
 hasProcessingProvider=no
 tags=raster,vectorization,vectorisation,digitizing,digitisation,segmentation,instance segmentation,SAM,SAM2,segment anything,AI,machine learning,archaeology,remote sensing,aerial photo,drone
 category=Plugins
-icon=ui/icon.png
+icon=icon.png
 experimental=True
 deprecated=False
