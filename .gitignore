@@ -11,9 +11,8 @@ venv/
 backend/.venv/
 plugin/.venv/
 
-# Model weights — downloaded automatically on first run (~40 MB)
-**/backend/weights/*.pt
-**/backend/weights/*.pth
+# Model weights — stored in ~/.aitracer/weights/, downloaded on first run (~160 MB)
+# The backend/weights/ directory inside the plugin is no longer used.
 
 # Build artefacts
 dist/

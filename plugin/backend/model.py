@@ -14,7 +14,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 from utils import mask_to_polygon_at_point
 
-CHECKPOINT_DIR = Path(__file__).parent / "weights"
+CHECKPOINT_DIR = Path.home() / ".aitracer" / "weights"
 CHECKPOINT_NAME = "sam2.1_hiera_tiny.pt"
 CONFIG_NAME = "configs/sam2.1/sam2.1_hiera_t.yaml"
 SESSION_TTL = 300  # seconds before idle session is evicted

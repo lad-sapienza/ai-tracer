@@ -34,13 +34,9 @@ find "${STAGING}" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || t
 find "${STAGING}" -name '*.pyc' -delete 2>/dev/null || true
 find "${STAGING}" -name '*.pyo' -delete 2>/dev/null || true
 find "${STAGING}" -name '.gitkeep' -delete 2>/dev/null || true
-# Model weights are large and downloaded at runtime — never ship them.
-find "${STAGING}/backend/weights" \
-     \( -name '*.pt' -o -name '*.pth' -o -name '*.safetensors' \) \
-     -delete 2>/dev/null || true
-
-# Ensure the weights directory exists (QGIS plugin zip must include it).
-mkdir -p "${STAGING}/backend/weights"
+# Model weights are stored in ~/.aitracer/weights/ at runtime — never ship them.
+# The backend/weights/ directory inside the plugin is no longer used.
+rm -rf "${STAGING}/backend/weights"
 
 # Copy repo-level docs into the zip.
 cp README.md LICENSE "${STAGING}/"

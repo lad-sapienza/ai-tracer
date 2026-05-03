@@ -26,10 +26,11 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.31"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.32"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
-VENV_DIR = Path.home() / ".aitracer" / "venv"  # outside QGIS-watched paths
+VENV_DIR = Path.home() / ".aitracer" / "venv"      # outside QGIS-watched paths
+WEIGHTS_DIR = Path.home() / ".aitracer" / "weights"  # persists across reinstalls
 BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
 SESSION_IDLE_MS = 5 * 60 * 1000  # 5 minutes — auto-cancel idle sessions
 
@@ -175,7 +176,12 @@ class VectorizePlugin:
             return True
 
         dlg = None
-        if not _venv("uvicorn").exists():
+        checkpoint = WEIGHTS_DIR / "sam2.1_hiera_tiny.pt"
+        needs_setup = (
+            not _venv("uvicorn").exists()
+            or not checkpoint.exists()
+        )
+        if needs_setup:
             ok, dlg = self._run_setup()
             if not ok:
                 return False
@@ -330,9 +336,10 @@ class VectorizePlugin:
                 return False, None
 
         # ── Step 3: model weights ──────────────────────────────────────────
-        weights_dir = BACKEND_DIR / "weights"
-        weights_dir.mkdir(exist_ok=True)
-        checkpoint = weights_dir / "sam2.1_hiera_tiny.pt"
+        # Stored in ~/.aitracer/weights/ so they survive plugin reinstalls
+        # and updates — the user never has to re-download the 160 MB file.
+        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+        checkpoint = WEIGHTS_DIR / "sam2.1_hiera_tiny.pt"
         if not checkpoint.exists():
             if dlg.wasCanceled():
                 dlg.close()
