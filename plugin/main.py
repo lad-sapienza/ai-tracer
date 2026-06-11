@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from qgis.core import (
-    QgsFeature, QgsGeometry, QgsMessageLog, Qgis,
-    QgsProject, QgsVectorLayer,
+    QgsGeometry, QgsMessageLog, Qgis,
+    QgsProject, QgsVectorLayer, QgsVectorLayerUtils,
     QgsFillSymbol, QgsSingleSymbolRenderer,
 )
 from qgis.gui import QgsMapToolPan
@@ -26,7 +26,7 @@ from . import backend_client
 from . import python_downloader
 
 PLUGIN_NAME = "AITracer by LAD"
-PLUGIN_VERSION = "0.1.32"       # must match APP_VERSION in backend/app.py
+PLUGIN_VERSION = "0.1.33"       # must match APP_VERSION in backend/app.py
 TEMP_LAYER_NAME = "AITracer"
 BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 VENV_DIR = Path.home() / ".aitracer" / "venv"      # outside QGIS-watched paths
@@ -859,19 +859,35 @@ class VectorizePlugin:
             layer.startEditing()
 
         fields = layer.fields()
-        feature = QgsFeature(fields)
-        feature.setGeometry(QgsGeometry.fromPolygonXY([polygon_geo]))
+        attr_map = {}
 
         # Only set AITracer-specific attributes when the target layer has them
         # (they exist on the auto-created memory layer but not on user layers).
         if fields.indexOf("fid") >= 0:
             existing_fids = [f["fid"] for f in layer.getFeatures() if f["fid"]]
-            feature.setAttribute("fid", max(existing_fids, default=0) + 1)
+            attr_map[fields.indexOf("fid")] = max(existing_fids, default=0) + 1
         if fields.indexOf("timestamp") >= 0:
-            feature.setAttribute("timestamp",
-                                 datetime.now().isoformat(timespec="seconds"))
+            attr_map[fields.indexOf("timestamp")] = \
+                datetime.now().isoformat(timespec="seconds")
         if fields.indexOf("raster") >= 0:
-            feature.setAttribute("raster", self._session.get("raster_name", ""))
+            attr_map[fields.indexOf("raster")] = \
+                self._session.get("raster_name", "")
+
+        # Values entered in the dock's field panel.
+        for name, value in self._dock.field_values().items():
+            idx = fields.indexOf(name)
+            if idx >= 0:
+                attr_map[idx] = value
+
+        # createFeature evaluates the layer's default-value expressions for
+        # every field not present in attr_map, so layer defaults apply to
+        # fields the user left empty in the panel.
+        feature = QgsVectorLayerUtils.createFeature(
+            layer,
+            QgsGeometry.fromPolygonXY([polygon_geo]),
+            attr_map,
+            layer.createExpressionContext(),
+        )
 
         layer.beginEditCommand("Add segmented feature")
         ok = layer.addFeature(feature)

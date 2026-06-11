@@ -1,16 +1,32 @@
 from pathlib import Path
 
 from qgis.core import QgsMapLayerProxyModel
-from qgis.gui import QgsMapLayerComboBox
+from qgis.gui import QgsCollapsibleGroupBox, QgsGui, QgsMapLayerComboBox
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QRectF, QSize
 from qgis.PyQt.QtGui import QKeySequence, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.PyQt.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QPushButton, QLabel, QSizePolicy, QFrame, QSlider, QShortcut
 )
 
+try:
+    from qgis.core import NULL
+except ImportError:          # pragma: no cover — older/newer bindings
+    NULL = None
+
 _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
+
+# Fields the plugin fills automatically on insert (see main._insert_feature);
+# they are never shown in the field-values panel.
+AUTO_FIELDS = {"fid", "timestamp", "raster"}
+
+
+def _is_unset(value) -> bool:
+    """True when an editor widget holds no usable value (NULL or empty)."""
+    if value is None or value == NULL:
+        return True
+    return isinstance(value, str) and value == ""
 
 
 class _SvgBanner(QLabel):
@@ -127,10 +143,23 @@ class AITracerDock(QDockWidget):
             "Choose an existing polygon layer or leave blank\n"
             "to auto-create a new AITracer layer."
         )
-        self._layer_combo.layerChanged.connect(
-            lambda lyr: self.layer_changed.emit(lyr)
-        )
+        self._layer_combo.layerChanged.connect(self._on_layer_changed)
         ctrl.addWidget(self._layer_combo)
+
+        # Field values for new polygons (rebuilt whenever the layer changes)
+        self._fields_group = QgsCollapsibleGroupBox("Field values")
+        self._fields_group.setToolTip(
+            "Values applied to every accepted polygon, until you change them.\n"
+            "Fields left empty fall back to the layer's default values."
+        )
+        self._fields_form = QFormLayout(self._fields_group)
+        self._fields_form.setContentsMargins(6, 6, 6, 6)
+        self._fields_group.setVisible(False)
+        ctrl.addWidget(self._fields_group)
+
+        self._field_wrappers = []      # [(field_name, QgsEditorWidgetWrapper)]
+        self._fields_layer = None
+        self._saved_field_values = {}  # layer_id -> {field_name: value}
 
         ctrl.addWidget(_hline())
 
@@ -286,6 +315,107 @@ class AITracerDock(QDockWidget):
         else:
             self._confidence_label.setText(f"Confidence: {value:.0%}")
             self._confidence_label.setVisible(True)
+
+    # ------------------------------------------------------------------ #
+    # Field-values panel                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _on_layer_changed(self, layer):
+        self._rebuild_fields_panel(layer)
+        self.layer_changed.emit(layer)
+
+    def _rebuild_fields_panel(self, layer):
+        """Rebuild the per-field editor widgets for *layer*.
+
+        Uses the editor widgets configured in the layer (value maps, ranges,
+        …) via the registry. Values entered by the user are remembered per
+        layer id and restored when the layer is selected again.
+        """
+        self._save_field_values()
+        self._disconnect_fields_layer()
+        while self._fields_form.rowCount():
+            self._fields_form.removeRow(0)
+        self._field_wrappers = []
+
+        if layer is None:
+            self._fields_group.setVisible(False)
+            return
+
+        cfg = layer.editFormConfig()
+        saved = self._saved_field_values.get(layer.id(), {})
+        for idx, field in enumerate(layer.fields()):
+            name = field.name()
+            if name in AUTO_FIELDS:
+                continue
+            if layer.editorWidgetSetup(idx).type() == "Hidden":
+                continue
+            if cfg.readOnly(idx):
+                continue
+            try:
+                wrapper = QgsGui.editorWidgetRegistry().create(
+                    layer, idx, None, self._fields_group
+                )
+            except Exception:
+                wrapper = None
+            if wrapper is None or wrapper.widget() is None:
+                continue
+            wrapper.setEnabled(True)
+            # Start from NULL (not the widget's natural zero/first-item state)
+            # so untouched fields fall back to the layer's default values.
+            try:
+                wrapper.setValue(NULL)
+            except Exception:
+                pass
+            if name in saved:
+                wrapper.setValue(saved[name])
+            default = field.defaultValueDefinition()
+            if default.isValid() and default.expression():
+                wrapper.widget().setToolTip(
+                    f"Default when left empty: {default.expression()}"
+                )
+            self._fields_form.addRow(field.alias() or name, wrapper.widget())
+            self._field_wrappers.append((name, wrapper))
+
+        self._fields_layer = layer
+        layer.updatedFields.connect(self._on_fields_updated)
+        self._fields_group.setVisible(bool(self._field_wrappers))
+
+    def _on_fields_updated(self):
+        self._rebuild_fields_panel(self._fields_layer)
+
+    def _disconnect_fields_layer(self):
+        if self._fields_layer is not None:
+            try:
+                self._fields_layer.updatedFields.disconnect(
+                    self._on_fields_updated
+                )
+            except (RuntimeError, TypeError):
+                pass  # layer already deleted, or never connected
+        self._fields_layer = None
+
+    def _save_field_values(self):
+        if self._fields_layer is None or not self._field_wrappers:
+            return
+        try:
+            layer_id = self._fields_layer.id()
+        except RuntimeError:        # underlying C++ layer deleted
+            return
+        self._saved_field_values[layer_id] = self.field_values()
+
+    def field_values(self) -> dict:
+        """Values entered in the field panel: {field_name: value}.
+
+        Fields left empty are omitted, so the layer's default values apply.
+        """
+        out = {}
+        for name, wrapper in self._field_wrappers:
+            try:
+                value = wrapper.value()
+            except Exception:
+                continue
+            if not _is_unset(value):
+                out[name] = value
+        return out
 
     def selected_layer(self):
         """Return the chosen output QgsVectorLayer, or None for 'new layer'."""

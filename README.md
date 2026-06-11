@@ -193,6 +193,21 @@ The AITracer memory layer includes these fields:
 To persist the layer, right-click it in the Layers panel and choose
 **Export → Save Features As**.
 
+### Attribute values
+
+When an existing layer is selected, a **Field values** panel appears in the
+dock listing the layer's editable fields, rendered with the editor widgets
+configured in the layer (value maps, ranges, …). Values entered there are
+applied to every accepted polygon until you change them — handy when
+digitising a batch of features that share attributes (same stratigraphic
+unit, same material, …), and they are remembered per layer when switching
+between output layers.
+
+Fields left empty fall back to the **default values** configured in
+*Layer Properties → Attributes Form* (evaluated per feature, so expressions
+like `now()` work). Fields named `fid`, `timestamp`, or `raster` are managed
+automatically by the plugin and are not shown in the panel.
+
 ---
 
 ## Architecture
