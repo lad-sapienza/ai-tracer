@@ -50,7 +50,9 @@ class ClearRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "sam2-tiny", "version": APP_VERSION}
+    name = _model.name if _model else None
+    return {"status": "ok", "model": f"sam2.1-{name}" if name else None,
+            "version": APP_VERSION}
 
 
 @app.post("/segment", response_model=SegmentResponse)

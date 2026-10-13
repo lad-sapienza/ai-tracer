@@ -15,8 +15,17 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 from utils import mask_to_polygon_at_point
 
 CHECKPOINT_DIR = Path.home() / ".aitracer" / "weights"
-CHECKPOINT_NAME = "sam2.1_hiera_tiny.pt"
-CONFIG_NAME = "configs/sam2.1/sam2.1_hiera_t.yaml"
+DEFAULT_MODEL = "tiny"
+MODELS = {
+    # key: (checkpoint file, sam2 config)
+    "tiny":  ("sam2.1_hiera_tiny.pt",      "configs/sam2.1/sam2.1_hiera_t.yaml"),
+    "small": ("sam2.1_hiera_small.pt",     "configs/sam2.1/sam2.1_hiera_s.yaml"),
+    "base+": ("sam2.1_hiera_base_plus.pt", "configs/sam2.1/sam2.1_hiera_b+.yaml"),
+    "large": ("sam2.1_hiera_large.pt",     "configs/sam2.1/sam2.1_hiera_l.yaml"),
+}
+# TEMPORARY switch for model comparison: put one of the keys above in this
+# file (e.g. `echo "base+" > ~/.aitracer/model`) and restart the backend.
+MODEL_CHOICE_FILE = Path.home() / ".aitracer" / "model"
 SESSION_TTL = 300  # seconds before idle session is evicted
 
 # Feed the previous mask logits back as `mask_input` when a refinement only
@@ -26,9 +35,28 @@ SESSION_TTL = 300  # seconds before idle session is evicted
 REFINE_WITH_MASK_INPUT = True
 
 
+def _select_model() -> str:
+    """Model key from MODEL_CHOICE_FILE, falling back to the default."""
+    try:
+        choice = MODEL_CHOICE_FILE.read_text().strip().lower()
+    except OSError:
+        return DEFAULT_MODEL
+    if choice not in MODELS:
+        print(f"Unknown model '{choice}' in {MODEL_CHOICE_FILE}; "
+              f"using {DEFAULT_MODEL}.", flush=True)
+        return DEFAULT_MODEL
+    if not (CHECKPOINT_DIR / MODELS[choice][0]).exists():
+        print(f"Checkpoint for '{choice}' not found in {CHECKPOINT_DIR}; "
+              f"using {DEFAULT_MODEL}.", flush=True)
+        return DEFAULT_MODEL
+    return choice
+
+
 class SegmentationModel:
     def __init__(self):
-        checkpoint = CHECKPOINT_DIR / CHECKPOINT_NAME
+        self.name = _select_model()
+        checkpoint_name, config_name = MODELS[self.name]
+        checkpoint = CHECKPOINT_DIR / checkpoint_name
         if not checkpoint.exists():
             raise FileNotFoundError(
                 f"Model checkpoint not found: {checkpoint}\n"
@@ -42,13 +70,13 @@ class SegmentationModel:
         else:
             device = "cpu"
 
-        print(f"Loading SAM2-tiny on {device}…  "
+        print(f"Loading SAM2.1 {self.name} on {device}…  "
               f"Python {sys.version}  |  torch {torch.__version__}  "
               f"| checkpoint: {checkpoint}",
               flush=True)
 
         try:
-            sam2 = build_sam2(CONFIG_NAME, str(checkpoint), device=device)
+            sam2 = build_sam2(config_name, str(checkpoint), device=device)
         except Exception:
             # Print the full traceback to the log so we can diagnose
             # platform-specific failures (e.g. Hydra config on Windows).
@@ -58,7 +86,7 @@ class SegmentationModel:
 
         self._predictor = SAM2ImagePredictor(sam2)
         self._sessions: dict[str, dict] = {}  # session_id → {embedding, last_access}
-        print(f"SAM2-tiny loaded on {device}.", flush=True)
+        print(f"SAM2.1 {self.name} loaded on {device}.", flush=True)
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #
