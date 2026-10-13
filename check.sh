@@ -3,7 +3,8 @@
 #
 # Mirrors the checks run by the QGIS Plugin Repository on upload:
 #   1. Every plugin .py file compiles.
-#   2. Bandit reports no issues (the repository blocks plugins with findings).
+#   2. No unqualified Qt6 enum members (e.g. QFrame.HLine) — see check_qt6.py.
+#   3. Bandit reports no issues (the repository blocks plugins with findings).
 #
 # Usage: ./check.sh
 # Requires bandit:  pip install bandit
@@ -22,7 +23,15 @@ if ! find plugin -name '*.py' -not -path '*/__pycache__/*' -print0 \
 fi
 _green "✓ Python files compile"
 
-# ── 2. bandit ─────────────────────────────────────────────────────────────
+# ── 2. Qt6 enums ──────────────────────────────────────────────────────────
+if python3 check_qt6.py plugin; then
+    _green "✓ Qt6 enums: all fully qualified"
+else
+    _red "✗ Unqualified enum members found — the QGIS Plugin Repository would flag them."
+    exit 1
+fi
+
+# ── 3. bandit ─────────────────────────────────────────────────────────────
 if command -v bandit >/dev/null 2>&1; then
     BANDIT=(bandit)
 elif python3 -m bandit --version >/dev/null 2>&1; then
