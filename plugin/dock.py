@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from qgis.core import QgsMapLayerProxyModel
@@ -14,6 +15,8 @@ try:
     from qgis.core import NULL
 except ImportError:          # pragma: no cover — older/newer bindings
     NULL = None
+
+_logger = logging.getLogger(__name__)
 
 _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
 
@@ -416,8 +419,8 @@ class AITracerDock(QDockWidget):
             # so untouched fields fall back to the layer's default values.
             try:
                 wrapper.setValue(NULL)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Could not reset field '%s': %s", name, exc)
             if name in saved:
                 wrapper.setValue(saved[name])
             default = field.defaultValueDefinition()
@@ -463,7 +466,8 @@ class AITracerDock(QDockWidget):
         for name, wrapper in self._field_wrappers:
             try:
                 value = wrapper.value()
-            except Exception:
+            except Exception as exc:
+                _logger.debug("Could not read field '%s': %s", name, exc)
                 continue
             if not _is_unset(value):
                 out[name] = value

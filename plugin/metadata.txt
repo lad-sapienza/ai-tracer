@@ -26,6 +26,20 @@ about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 
     Developed by LAD — Laboratorio di Archeologia Digitale,
     Sapienza University of Rome.
+changelog=0.2.1
+    - Fix: address static-analysis (Bandit) findings: no silent exception
+      swallowing, subprocess calls documented and restricted to fixed paths.
+    0.2.0
+    - First stable release (experimental flag removed).
+    - New: Pause/Resume. Switching to another QGIS map tool (e.g. Vertex tool)
+      pauses AITracer and discards the in-progress preview; press Resume in the
+      panel to continue. Backend, target layer and field values are kept.
+    - New: "Edit last polygon" button. Selects the last accepted polygon and
+      switches to QGIS's native Vertex tool; the selection is cleared on Resume.
+    0.1.33
+    - Field values panel: preset attributes for accepted polygons.
+    0.1.32
+    - Model weights stored in ~/.aitracer/weights/, surviving plugin reinstalls.
 author=Julian Bogdani | LAD – Laboratorio di Archeologia Digitale, Sapienza University of Rome
 email=julian.bogdani@uniroma1.it
 homepage=https://github.com/lad-sapienza/ai-tracer

@@ -14,7 +14,7 @@ import os
 import platform
 import shutil
 import stat
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
@@ -177,7 +177,8 @@ def verify() -> tuple[bool, str]:
         kwargs["startupinfo"] = _win_startupinfo()
 
     try:
-        result = subprocess.run(
+        # exe is the plugin's own standalone Python: no user input, no shell.
+        result = subprocess.run(  # nosec B603
             [exe, "-c", "import sys; print(sys.version_info.major, sys.version_info.minor)"],
             **kwargs,
         )

@@ -1,7 +1,8 @@
 import os
 import shutil
 import socket
-import subprocess
+import logging
+import subprocess  # nosec B404
 import sys
 import time
 from datetime import datetime
@@ -24,6 +25,8 @@ from .preview import PreviewOverlay
 from .dock import AITracerDock
 from . import backend_client
 from . import python_downloader
+
+_logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "AITracer by LAD"
 PLUGIN_VERSION = "0.2.0"       # must match APP_VERSION in backend/app.py
@@ -390,7 +393,8 @@ class VectorizePlugin:
                 run_kwargs["startupinfo"] = _win_startupinfo()
 
             try:
-                result = subprocess.run(cmd, **run_kwargs)
+                # cmd is built from the plugin's own venv/paths: no user input, no shell.
+                result = subprocess.run(cmd, **run_kwargs)  # nosec B603
             except FileNotFoundError as exc:
                 dlg.close()
                 msg = f"Executable not found during '{label}': {exc}\nCommand: {cmd[0]}"
@@ -526,8 +530,9 @@ class VectorizePlugin:
         def _close_dlg():
             try:
                 dlg.close()
-            except Exception:
-                pass
+            except RuntimeError as exc:
+                # Dialog's C++ object already deleted.
+                _logger.debug("Progress dialog already closed: %s", exc)
 
         popen_kw: dict = {
             "cwd": str(BACKEND_DIR),
@@ -539,7 +544,8 @@ class VectorizePlugin:
             popen_kw["startupinfo"] = _win_startupinfo()
         self._backend_log = popen_kw["stdout"]
         try:
-            self._backend_proc = subprocess.Popen(
+            # Fixed uvicorn path and args: no user input, no shell.
+            self._backend_proc = subprocess.Popen(  # nosec B603
                 [str(uvicorn), "app:app",
                  "--port", str(self._backend_port),
                  "--log-level", "info"],

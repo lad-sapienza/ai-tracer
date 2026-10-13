@@ -6,6 +6,9 @@ nothing to flag — there is no URL-scheme handling in http.client.
 """
 import http.client
 import json
+import logging
+
+_logger = logging.getLogger(__name__)
 
 # Port is set at runtime by main.py after finding a free port.
 # Default matches the historical hard-coded value.
@@ -96,8 +99,9 @@ def clear_session(session_id: str) -> None:
         conn.request("POST", "/clear", body=body,
                      headers={"Content-Type": "application/json"})
         conn.getresponse().read()
-    except Exception:
-        pass  # best-effort, never raise
+    except Exception as exc:
+        # Best-effort: a failed eviction must never surface to the user.
+        _logger.debug("clear_session failed: %s", exc)
     finally:
         if conn:
             conn.close()
