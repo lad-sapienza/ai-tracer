@@ -26,7 +26,9 @@ about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 
     Developed by LAD — Laboratorio di Archeologia Digitale,
     Sapienza University of Rome.
-changelog=0.2.1
+changelog=0.2.2
+    - Fix: Qt6 compatibility, fully qualified QgsBlockingNetworkRequest.ErrorCode.NoError.
+    0.2.1
     - Fix: address static-analysis (Bandit) findings: no silent exception
       swallowing, subprocess calls documented and restricted to fixed paths.
     0.2.0

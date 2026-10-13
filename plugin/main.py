@@ -446,7 +446,7 @@ class VectorizePlugin:
             req = QgsBlockingNetworkRequest()
             err = req.get(QNetworkRequest(QUrl(weights_url)))
 
-            if err != QgsBlockingNetworkRequest.NoError:
+            if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
                 dlg.close()
                 msg = (
                     f"Failed to download model weights: {req.errorMessage()}\n"

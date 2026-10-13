@@ -92,7 +92,7 @@ def install(
         request = QgsBlockingNetworkRequest()
         err = request.get(QNetworkRequest(QUrl(url)))
 
-        if err != QgsBlockingNetworkRequest.NoError:
+        if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
             return False, f"Download failed: {request.errorMessage()}\nURL: {url}"
 
         content = request.reply().content()
