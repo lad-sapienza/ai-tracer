@@ -22,7 +22,7 @@ from .segmentation_worker import SegmentationWorker
 from .canvas_capture import capture_base64
 from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
-from .dock import AITracerDock
+from .dock import AITracerDock, SIMPLIFY_DEFAULT_STEP
 from . import backend_client
 from . import python_downloader
 
@@ -47,6 +47,7 @@ MODEL_OPTIONS = {
 }
 DEFAULT_MODEL = "tiny"
 MODEL_SETTING = "AITracer/model"
+SIMPLIFY_SETTING = "AITracer/simplify_step"
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -151,6 +152,11 @@ class VectorizePlugin:
         self._dock.resume_requested.connect(self._on_resume)
         self._dock.edit_last_requested.connect(self._on_edit_last)
         self._dock.model_selected.connect(self._on_model_selected)
+        try:
+            step = int(QgsSettings().value(SIMPLIFY_SETTING, SIMPLIFY_DEFAULT_STEP))
+        except (TypeError, ValueError):
+            step = SIMPLIFY_DEFAULT_STEP
+        self._dock.set_simplify_step(step)
         self._model_key = self._desired_model()
         self._dock.set_models(
             [(k, v[0]) for k, v in MODEL_OPTIONS.items()], self._model_key
@@ -983,12 +989,22 @@ class VectorizePlugin:
         raw = self._session.get("raw_polygon_geo")
         if not raw:
             return
-        tolerance = self._dock.simplify_tolerance()
+        # The slider is in screen pixels; the polygon is in map units.
+        # The mask lives in physical image pixels, hence the division by dpr.
+        mtp = self._session.get("mtp")
+        dpr = self._session.get("dpr") or 1.0
+        units_per_px = mtp.mapUnitsPerPixel() / dpr if mtp else 0.0
+        tolerance = self._dock.simplify_tolerance() * units_per_px
         simplified = simplify_polygon_geo(raw, tolerance)
         self._session["current_polygon_geo"] = simplified
+        n = len(simplified)
+        if n > 1 and simplified[0] == simplified[-1]:
+            n -= 1   # closing vertex repeats the first one
+        self._dock.set_vertex_count(n)
         self._overlay.show(simplified)
 
     def _on_simplify_changed(self, _value: float):
+        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_step())
         if self._session["active"]:
             self._update_preview()
 
@@ -1099,6 +1115,7 @@ class VectorizePlugin:
             self._tool.set_session_active(False)
         if self._dock:
             self._dock.set_session_active(False)
+            self._dock.set_vertex_count(None)
 
     # ------------------------------------------------------------------ #
     # Feature insertion                                                   #

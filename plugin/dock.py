@@ -24,6 +24,18 @@ _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
 # they are never shown in the field-values panel.
 AUTO_FIELDS = {"fid", "timestamp", "raster"}
 
+# Simplification slider: 0–SIMPLIFY_STEPS maps quadratically to 0–SIMPLIFY_MAX_PX
+# screen pixels, so the fine range (0.5–2 px, where the vertex count drops
+# fastest) gets most of the slider travel. Pixels, not map units, so the
+# slider means the same thing at any zoom level or CRS.
+SIMPLIFY_STEPS = 100
+SIMPLIFY_MAX_PX = 4.0
+SIMPLIFY_DEFAULT_STEP = 42      # ≈ 0.7 px: follows the edge closely
+
+
+def simplify_px(step: int) -> float:
+    return SIMPLIFY_MAX_PX * (step / SIMPLIFY_STEPS) ** 2
+
 
 def _is_unset(value) -> bool:
     """True when an editor widget holds no usable value (NULL or empty)."""
@@ -140,18 +152,21 @@ class AITracerDock(QDockWidget):
         simplify_layout.setContentsMargins(0, 0, 0, 0)
         simplify_layout.addWidget(QLabel("Simplify:"))
         self._simplify_slider = QSlider(Qt.Orientation.Horizontal)
-        self._simplify_slider.setRange(0, 50)
-        self._simplify_slider.setValue(0)
+        self._simplify_slider.setRange(0, SIMPLIFY_STEPS)
+        self._simplify_slider.setValue(SIMPLIFY_DEFAULT_STEP)
         self._simplify_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._simplify_slider.setTickInterval(5)
+        self._simplify_slider.setTickInterval(10)
         self._simplify_slider.setToolTip(
-            "Douglas-Peucker simplification tolerance.\n"
-            "0 = no simplification  |  50 = 0.50 map units"
+            "Douglas-Peucker simplification tolerance, in screen pixels.\n"
+            "0 = every contour pixel  |  fine control below 2 px\n"
+            "Independent of zoom level and CRS."
         )
         self._simplify_slider.valueChanged.connect(self._on_simplify_slider)
         simplify_layout.addWidget(self._simplify_slider)
-        self._simplify_value_label = QLabel("0.00")
-        self._simplify_value_label.setFixedWidth(30)
+        self._vertex_count = None
+        self._simplify_value_label = QLabel()
+        self._simplify_value_label.setMinimumWidth(80)
+        self._refresh_simplify_label()
         simplify_layout.addWidget(self._simplify_value_label)
         ctrl.addWidget(simplify_row)
 
@@ -332,9 +347,14 @@ class AITracerDock(QDockWidget):
     # ------------------------------------------------------------------ #
 
     def _on_simplify_slider(self, value: int):
-        tolerance = value * 0.01
-        self._simplify_value_label.setText(f"{tolerance:.2f}")
-        self.simplify_changed.emit(tolerance)
+        self._refresh_simplify_label()
+        self.simplify_changed.emit(simplify_px(value))
+
+    def _refresh_simplify_label(self):
+        text = f"{self.simplify_tolerance():.1f} px"
+        if self._vertex_count is not None:
+            text += f" · {self._vertex_count} pts"
+        self._simplify_value_label.setText(text)
 
     def _on_toggle_clicked(self, checked: bool):
         if self._paused:
@@ -418,7 +438,25 @@ class AITracerDock(QDockWidget):
         self._update_toggle_label()
 
     def simplify_tolerance(self) -> float:
-        return self._simplify_slider.value() * 0.01
+        """Current tolerance in screen pixels."""
+        return simplify_px(self._simplify_slider.value())
+
+    def simplify_step(self) -> int:
+        return self._simplify_slider.value()
+
+    def set_simplify_step(self, step: int):
+        """Restore a saved slider position without emitting simplify_changed."""
+        self._simplify_slider.blockSignals(True)
+        self._simplify_slider.setValue(
+            max(0, min(SIMPLIFY_STEPS, int(step)))
+        )
+        self._simplify_slider.blockSignals(False)
+        self._refresh_simplify_label()
+
+    def set_vertex_count(self, count):
+        """Show the vertex count of the current preview (None to hide)."""
+        self._vertex_count = count
+        self._refresh_simplify_label()
 
     def set_status(self, text: str):
         self._status_label.setText(text)
