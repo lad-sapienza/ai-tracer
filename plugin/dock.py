@@ -24,17 +24,25 @@ _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
 # they are never shown in the field-values panel.
 AUTO_FIELDS = {"fid", "timestamp", "raster"}
 
-# Simplification slider: 0–SIMPLIFY_STEPS maps quadratically to 0–SIMPLIFY_MAX_PX
-# screen pixels, so the fine range (0.5–2 px, where the vertex count drops
-# fastest) gets most of the slider travel. Pixels, not map units, so the
-# slider means the same thing at any zoom level or CRS.
+# Simplification slider: 0–SIMPLIFY_STEPS maps to 0–SIMPLIFY_MAX_PX screen
+# pixels with a power curve, so the fine range (0.5–3 px, where the vertex
+# count drops fastest) gets most of the slider travel and the usual working
+# point sits mid-slider. Pixels, not map units, so the slider means the same
+# thing at any zoom level or CRS.
 SIMPLIFY_STEPS = 100
-SIMPLIFY_MAX_PX = 4.0
-SIMPLIFY_DEFAULT_STEP = 42      # ≈ 0.7 px: follows the edge closely
+SIMPLIFY_MAX_PX = 6.0
+SIMPLIFY_EXPONENT = 1.5
+SIMPLIFY_DEFAULT_PX = 2.8
 
 
 def simplify_px(step: int) -> float:
-    return SIMPLIFY_MAX_PX * (step / SIMPLIFY_STEPS) ** 2
+    return SIMPLIFY_MAX_PX * (step / SIMPLIFY_STEPS) ** SIMPLIFY_EXPONENT
+
+
+def simplify_step_for(px: float) -> int:
+    """Slider step whose tolerance is closest to *px* (inverse of simplify_px)."""
+    px = max(0.0, min(SIMPLIFY_MAX_PX, px))
+    return round(SIMPLIFY_STEPS * (px / SIMPLIFY_MAX_PX) ** (1 / SIMPLIFY_EXPONENT))
 
 
 def _is_unset(value) -> bool:
@@ -153,12 +161,12 @@ class AITracerDock(QDockWidget):
         simplify_layout.addWidget(QLabel("Simplify:"))
         self._simplify_slider = QSlider(Qt.Orientation.Horizontal)
         self._simplify_slider.setRange(0, SIMPLIFY_STEPS)
-        self._simplify_slider.setValue(SIMPLIFY_DEFAULT_STEP)
+        self._simplify_slider.setValue(simplify_step_for(SIMPLIFY_DEFAULT_PX))
         self._simplify_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._simplify_slider.setTickInterval(10)
         self._simplify_slider.setToolTip(
             "Douglas-Peucker simplification tolerance, in screen pixels.\n"
-            "0 = every contour pixel  |  fine control below 2 px\n"
+            "0 = every contour pixel  |  fine control below 3 px\n"
             "Independent of zoom level and CRS."
         )
         self._simplify_slider.valueChanged.connect(self._on_simplify_slider)
@@ -441,15 +449,10 @@ class AITracerDock(QDockWidget):
         """Current tolerance in screen pixels."""
         return simplify_px(self._simplify_slider.value())
 
-    def simplify_step(self) -> int:
-        return self._simplify_slider.value()
-
-    def set_simplify_step(self, step: int):
-        """Restore a saved slider position without emitting simplify_changed."""
+    def set_simplify_px(self, px: float):
+        """Restore a saved tolerance without emitting simplify_changed."""
         self._simplify_slider.blockSignals(True)
-        self._simplify_slider.setValue(
-            max(0, min(SIMPLIFY_STEPS, int(step)))
-        )
+        self._simplify_slider.setValue(simplify_step_for(px))
         self._simplify_slider.blockSignals(False)
         self._refresh_simplify_label()
 

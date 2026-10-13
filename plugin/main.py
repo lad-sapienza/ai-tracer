@@ -22,7 +22,7 @@ from .segmentation_worker import SegmentationWorker
 from .canvas_capture import capture_base64
 from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
-from .dock import AITracerDock, SIMPLIFY_DEFAULT_STEP
+from .dock import AITracerDock, SIMPLIFY_DEFAULT_PX
 from . import backend_client
 from . import python_downloader
 
@@ -47,7 +47,9 @@ MODEL_OPTIONS = {
 }
 DEFAULT_MODEL = "tiny"
 MODEL_SETTING = "AITracer/model"
-SIMPLIFY_SETTING = "AITracer/simplify_step"
+# Stored in pixels (not slider steps) so the saved value survives changes to
+# the slider curve.
+SIMPLIFY_SETTING = "AITracer/simplify_px"
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -153,10 +155,10 @@ class VectorizePlugin:
         self._dock.edit_last_requested.connect(self._on_edit_last)
         self._dock.model_selected.connect(self._on_model_selected)
         try:
-            step = int(QgsSettings().value(SIMPLIFY_SETTING, SIMPLIFY_DEFAULT_STEP))
+            px = float(QgsSettings().value(SIMPLIFY_SETTING, SIMPLIFY_DEFAULT_PX))
         except (TypeError, ValueError):
-            step = SIMPLIFY_DEFAULT_STEP
-        self._dock.set_simplify_step(step)
+            px = SIMPLIFY_DEFAULT_PX
+        self._dock.set_simplify_px(px)
         self._model_key = self._desired_model()
         self._dock.set_models(
             [(k, v[0]) for k, v in MODEL_OPTIONS.items()], self._model_key
@@ -1004,7 +1006,7 @@ class VectorizePlugin:
         self._overlay.show(simplified)
 
     def _on_simplify_changed(self, _value: float):
-        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_step())
+        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_tolerance())
         if self._session["active"]:
             self._update_preview()
 
