@@ -79,6 +79,7 @@ class AITracerDock(QDockWidget):
         self.setObjectName("AITracerDock")
         self._tool_active = False
         self._paused = False
+        self._session_active = False
         self._version = version
         self._build_ui()
         self._setup_shortcuts()
@@ -205,10 +206,10 @@ class AITracerDock(QDockWidget):
         ctrl.addWidget(btn_row)
 
         # Hands the last accepted polygon over to QGIS's native vertex tool.
-        self._edit_last_btn = QPushButton("✎  Edit last polygon")
+        self._edit_last_btn = QPushButton("✎  Edit last polygon (E)")
         self._edit_last_btn.setToolTip(
-            "Select the last accepted polygon and switch to QGIS's vertex tool. "
-            "Press Resume afterwards to continue tracing."
+            "Select the last accepted polygon and switch to QGIS's vertex tool "
+            "(shortcut: E). Press Resume afterwards to continue tracing."
         )
         self._edit_last_btn.setEnabled(False)
         self._edit_last_btn.clicked.connect(self.edit_last_requested)
@@ -220,6 +221,7 @@ class AITracerDock(QDockWidget):
             "Right-click: remove from selection\n"
             "Ctrl+Z: undo last point\n"
             "Enter: accept — Escape: cancel\n"
+            "E: edit last accepted polygon\n"
             "Tip: keep only the raster layer visible."
         )
         tip.setWordWrap(True)
@@ -293,6 +295,22 @@ class AITracerDock(QDockWidget):
         self._sc_cancel.setEnabled(False)
         self._sc_cancel.activated.connect(self.cancelled)
 
+        # E = edit last polygon. Enabled only while the button is usable and
+        # no segmentation session is running, so a stray key press can't
+        # discard a preview. Text fields keep receiving the letter normally
+        # (Qt lets editing widgets claim printable keys before shortcuts).
+        self._sc_edit = QShortcut(QKeySequence(Qt.Key.Key_E), self)
+        self._sc_edit.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._sc_edit.setEnabled(False)
+        self._sc_edit.activated.connect(self.edit_last_requested)
+
+    def _update_edit_shortcut(self):
+        self._sc_edit.setEnabled(
+            self._edit_last_btn.isEnabled()
+            and self._tool_active
+            and not self._session_active
+        )
+
     # ------------------------------------------------------------------ #
     # Private slots                                                        #
     # ------------------------------------------------------------------ #
@@ -310,6 +328,7 @@ class AITracerDock(QDockWidget):
             return
         self._tool_active = checked
         self._update_toggle_label()
+        self._update_edit_shortcut()
         self.tool_toggled.emit(checked)
 
     def _on_stop_clicked(self):
@@ -342,10 +361,12 @@ class AITracerDock(QDockWidget):
         if not active:
             self._paused = False
         self._toggle_btn.setChecked(active)
+        self._update_edit_shortcut()
         self._update_toggle_label()
 
     def set_edit_last_enabled(self, enabled: bool):
         self._edit_last_btn.setEnabled(enabled)
+        self._update_edit_shortcut()
 
     def is_tool_active(self) -> bool:
         return self._tool_active
@@ -485,6 +506,8 @@ class AITracerDock(QDockWidget):
             self._layer_combo.setLayer(layer)
 
     def set_session_active(self, active: bool):
+        self._session_active = active
+        self._update_edit_shortcut()
         self._accept_btn.setEnabled(active)
         self._cancel_btn.setEnabled(active)
         self._sc_accept.setEnabled(active)

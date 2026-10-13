@@ -19,6 +19,12 @@ CHECKPOINT_NAME = "sam2.1_hiera_tiny.pt"
 CONFIG_NAME = "configs/sam2.1/sam2.1_hiera_t.yaml"
 SESSION_TTL = 300  # seconds before idle session is evicted
 
+# Feed the previous mask logits back as `mask_input` when a refinement only
+# adds points to the prompt that produced them (SAM2's recommended interactive
+# loop). Keeps successive masks stable instead of re-deriving them from the
+# points alone. Module-level so it can be switched off for A/B testing.
+REFINE_WITH_MASK_INPUT = True
+
 
 class SegmentationModel:
     def __init__(self):
@@ -95,15 +101,35 @@ class SegmentationModel:
 
         point_coords, point_labels = _build_prompt(positive_points, negative_points)
 
+        # Reuse the previous mask only when this prompt extends the one that
+        # produced it. After an undo/removal the cached logits no longer match
+        # the prompt, so fall back to a fresh prediction.
+        entry = self._sessions[session_id]
+        prompt = (_point_set(positive_points), _point_set(negative_points))
+        mask_input = None
+        if (
+            REFINE_WITH_MASK_INPUT
+            and entry.get("logits") is not None
+            and entry.get("prompt") is not None
+            and prompt[0] >= entry["prompt"][0]
+            and prompt[1] >= entry["prompt"][1]
+        ):
+            mask_input = entry["logits"]
+
         with torch.inference_mode():
-            masks, scores, _ = self._predictor.predict(
+            masks, scores, logits = self._predictor.predict(
                 point_coords=point_coords,
                 point_labels=point_labels,
-                multimask_output=True,
+                mask_input=mask_input,
+                # Several candidates on a fresh prompt (ambiguous single
+                # click); a single, stable mask when refining.
+                multimask_output=mask_input is None,
             )
 
         # Pick the mask with the highest score
         best_idx = int(np.argmax(scores))
+        entry["logits"] = logits[best_idx][None, :, :]
+        entry["prompt"] = prompt
         mask = masks[best_idx].astype(np.uint8)
         confidence = float(scores[best_idx])
 
@@ -140,6 +166,10 @@ def _decode_image(image_b64: str) -> np.ndarray:
     raw = base64.b64decode(image_b64)
     image = Image.open(BytesIO(raw)).convert("RGB")
     return np.array(image)
+
+
+def _point_set(points: list) -> frozenset:
+    return frozenset((int(p[0]), int(p[1])) for p in points)
 
 
 def _build_prompt(positive: list, negative: list):
