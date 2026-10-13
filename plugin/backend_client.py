@@ -26,6 +26,25 @@ def set_port(port: int) -> None:
     _port = port
 
 
+def health() -> dict | None:
+    """Return the backend's /health payload, or None if unreachable/unhealthy."""
+    conn = None
+    try:
+        conn = http.client.HTTPConnection("localhost", _port, timeout=3)
+        conn.request("GET", "/health")
+        r = conn.getresponse()
+        if r.status != 200:
+            return None
+        data = json.loads(r.read())
+        return data if data.get("status") == "ok" else None
+    except Exception as exc:
+        _logger.debug("health check failed: %s", exc)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
 def health_check(expected_version: str | None = None) -> bool:
     """Return True if the backend is reachable, healthy, and (optionally)
     running the expected plugin version.
@@ -33,19 +52,39 @@ def health_check(expected_version: str | None = None) -> bool:
     Passing *expected_version* guards against a stale uvicorn process left
     over from a previous plugin version answering on the same port.
     """
+    data = health()
+    if data is None:
+        return False
+    if expected_version and data.get("version") != expected_version:
+        return False
+    return True
+
+
+def current_model() -> str | None:
+    """Key of the model the backend has loaded, or None."""
+    data = health()
+    return data.get("model_key") if data else None
+
+
+def load_model(name: str) -> None:
+    """Ask the backend to switch to model *name* (blocks until loaded).
+
+    Raises BackendError on failure; the previous model stays loaded.
+    """
+    body = json.dumps({"model": name}).encode()
     conn = None
     try:
-        conn = http.client.HTTPConnection("localhost", _port, timeout=3)
-        conn.request("GET", "/health")
+        conn = http.client.HTTPConnection("localhost", _port, timeout=120)
+        conn.request("POST", "/load", body=body,
+                     headers={"Content-Type": "application/json"})
         r = conn.getresponse()
+        raw = r.read()
         if r.status != 200:
-            return False
-        data = json.loads(r.read())
-        if expected_version and data.get("version") != expected_version:
-            return False
-        return data.get("status") == "ok"
-    except Exception:
-        return False
+            raise BackendError(f"HTTP {r.status}: {raw.decode(errors='replace')}")
+    except BackendError:
+        raise
+    except OSError as e:
+        raise BackendError(f"Cannot reach backend: {e}")
     finally:
         if conn:
             conn.close()

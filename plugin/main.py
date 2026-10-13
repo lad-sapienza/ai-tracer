@@ -11,11 +11,11 @@ from pathlib import Path
 from qgis.core import (
     QgsGeometry, QgsMessageLog, Qgis,
     QgsProject, QgsVectorLayer, QgsVectorLayerUtils,
-    QgsFillSymbol, QgsSingleSymbolRenderer,
+    QgsFillSymbol, QgsSingleSymbolRenderer, QgsSettings,
 )
 from qgis.gui import QgsMapToolPan
 from qgis.PyQt.QtCore import Qt, QEvent, QObject, QThread, QTimer
-from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from .map_tool import SegmentationTool
 from .segmentation_worker import SegmentationWorker
@@ -36,6 +36,17 @@ VENV_DIR = Path.home() / ".aitracer" / "venv"      # outside QGIS-watched paths
 WEIGHTS_DIR = Path.home() / ".aitracer" / "weights"  # persists across reinstalls
 BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
 SESSION_IDLE_MS = 5 * 60 * 1000  # 5 minutes — auto-cancel idle sessions
+
+# Segmentation models offered in the dock: key → (label, checkpoint, size in MB).
+# Keys match backend/model.py MODELS. The first entry is the default and the
+# only one downloaded during first-time setup; the others are fetched on demand.
+WEIGHTS_BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
+MODEL_OPTIONS = {
+    "tiny":  ("Tiny — fastest (156 MB)",        "sam2.1_hiera_tiny.pt",      156),
+    "base+": ("Base+ — more accurate (324 MB)", "sam2.1_hiera_base_plus.pt", 324),
+}
+DEFAULT_MODEL = "tiny"
+MODEL_SETTING = "AITracer/model"
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -96,6 +107,7 @@ class VectorizePlugin:
         self._prev_tool = None
         # (layer_id, feature_id) of the last accepted polygon, for "Edit last".
         self._last_feature: tuple | None = None
+        self._model_key: str = DEFAULT_MODEL
         # Layer id whose selection was set by "Edit last"; cleared on resume.
         self._edit_selection_layer_id: str | None = None
         self._dock = None
@@ -138,6 +150,11 @@ class VectorizePlugin:
         self._dock.tool_toggled.connect(self._toggle_tool)
         self._dock.resume_requested.connect(self._on_resume)
         self._dock.edit_last_requested.connect(self._on_edit_last)
+        self._dock.model_selected.connect(self._on_model_selected)
+        self._model_key = self._desired_model()
+        self._dock.set_models(
+            [(k, v[0]) for k, v in MODEL_OPTIONS.items()], self._model_key
+        )
         self._canvas.mapToolSet.connect(self._on_map_tool_set)
         self._dock.reset_requested.connect(self._on_reset_backend)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
@@ -170,6 +187,7 @@ class VectorizePlugin:
             if not self._ensure_backend():
                 self._dock.set_tool_active(False)
                 return
+            self._sync_backend_model()
             self._prev_tool = self._canvas.mapTool()
             self._canvas.setMapTool(self._tool)
             self._dock.set_status("Left-click to segment. Right-click to exclude.")
@@ -184,6 +202,154 @@ class VectorizePlugin:
                     self._prev_tool or QgsMapToolPan(self._canvas)
                 )
             self._dock.set_status("Deactivated. Press Activate to start.")
+
+    # ------------------------------------------------------------------ #
+    # Model selection                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _desired_model(self) -> str:
+        """Saved model choice, if valid and its weights are on disk."""
+        key = QgsSettings().value(MODEL_SETTING, DEFAULT_MODEL)
+        if key in MODEL_OPTIONS and (WEIGHTS_DIR / MODEL_OPTIONS[key][1]).exists():
+            return key
+        return DEFAULT_MODEL
+
+    def _sync_backend_model(self):
+        """Make the running backend use the saved model (it may have been
+        started earlier with a different one)."""
+        want = self._desired_model()
+        have = backend_client.current_model()
+        if have is not None and have != want:
+            self._load_backend_model(want)
+        self._model_key = want
+        self._dock.set_model(want)
+
+    def _load_backend_model(self, key: str) -> bool:
+        """Ask the backend to load *key*, showing a busy cursor. Returns
+        True on success; on failure shows a message and returns False."""
+        self._dock.set_status(
+            f"Loading model {MODEL_OPTIONS[key][0].split(' —')[0]}…"
+        )
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            backend_client.load_model(key)
+            return True
+        except backend_client.BackendError as exc:
+            _log(f"Model load failed: {exc}", Qgis.MessageLevel.Critical)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME, f"Could not load model: {exc}",
+                level=Qgis.MessageLevel.Critical, duration=10,
+            )
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _on_model_selected(self, key: str):
+        previous = self._model_key
+        if key == previous or key not in MODEL_OPTIONS:
+            return
+        if self._busy:
+            self._dock.set_model(previous)
+            self._dock.set_status("Wait for the current segmentation to finish.")
+            return
+
+        # Any preview belongs to the old model's embedding.
+        if self._session.get("active"):
+            self._on_cancel()
+
+        if not self._ensure_model_weights(key):
+            self._dock.set_model(previous)
+            return
+
+        # Backend not running yet: it will start with the saved model.
+        if backend_client.health() is not None:
+            if not self._load_backend_model(key):
+                self._dock.set_model(previous)
+                self._dock.set_status("Model not changed.")
+                return
+
+        QgsSettings().setValue(MODEL_SETTING, key)
+        self._model_key = key
+        self._dock.set_status(
+            f"Model: {MODEL_OPTIONS[key][0].split(' —')[0]}. Left-click to segment."
+        )
+
+    def _ensure_model_weights(self, key: str) -> bool:
+        """Download the checkpoint for *key* if missing (after confirmation).
+        Returns True when the file is available."""
+        label, filename, size_mb = MODEL_OPTIONS[key]
+        checkpoint = WEIGHTS_DIR / filename
+        if checkpoint.exists():
+            return True
+
+        answer = QMessageBox.question(
+            self._iface.mainWindow(), PLUGIN_NAME,
+            f"The {label.split(' —')[0]} model is not installed yet.\n\n"
+            f"Download it now (about {size_mb} MB) from Meta's SAM 2.1 "
+            f"release at dl.fbaipublicfiles.com?\n"
+            f"It is saved in {WEIGHTS_DIR} and downloaded only once.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+
+        url = WEIGHTS_BASE_URL + filename
+        dlg = QProgressDialog(
+            f"Downloading {filename} (~{size_mb} MB)…", None, 0, 0,
+            self._iface.mainWindow(),
+        )
+        dlg.setWindowTitle("AITracer — Model download")
+        dlg.setMinimumWidth(380)
+        dlg.setModal(True)
+        dlg.show()
+        QApplication.processEvents()
+
+        def _fail(msg: str) -> bool:
+            dlg.close()
+            _log(msg, Qgis.MessageLevel.Critical)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME, msg, level=Qgis.MessageLevel.Critical, duration=30,
+            )
+            return False
+
+        # Same mechanism as the first-time setup: Qt's network stack honours
+        # the system certificate store and QGIS proxy settings.
+        from qgis.core import QgsBlockingNetworkRequest
+        from qgis.PyQt.QtCore import QUrl
+        from qgis.PyQt.QtNetwork import QNetworkRequest
+
+        req = QgsBlockingNetworkRequest()
+        err = req.get(QNetworkRequest(QUrl(url)))
+        if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
+            return _fail(
+                f"Failed to download {filename}: {req.errorMessage()}\n"
+                f"You can download it manually from:\n{url}\n"
+                f"and copy it to:\n{checkpoint}"
+            )
+
+        content = bytes(req.reply().content().data())
+        if len(content) < size_mb * 1024 * 1024 * 0.9:
+            return _fail(
+                f"Download of {filename} incomplete "
+                f"({len(content) // (1024 * 1024)} MB, expected ~{size_mb} MB). "
+                f"Check your internet connection."
+            )
+
+        dlg.setLabelText("Saving model weights…")
+        QApplication.processEvents()
+        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+        part = checkpoint.with_suffix(".pt.part")
+        try:
+            part.write_bytes(content)
+            part.replace(checkpoint)  # atomic: never a truncated checkpoint
+        except OSError as exc:
+            part.unlink(missing_ok=True)
+            return _fail(f"Failed to save {filename}: {exc}")
+
+        dlg.close()
+        return True
 
     def _on_map_tool_set(self, new_tool, _old_tool):
         """Pause when another map tool replaces ours; unpause when we return."""
@@ -538,7 +704,7 @@ class VectorizePlugin:
             "cwd": str(BACKEND_DIR),
             "stdout": open(log_file, "w"),
             "stderr": subprocess.STDOUT,
-            "env": _clean_env(),
+            "env": {**_clean_env(), "AITRACER_MODEL": self._desired_model()},
         }
         if sys.platform == "win32":
             popen_kw["startupinfo"] = _win_startupinfo()

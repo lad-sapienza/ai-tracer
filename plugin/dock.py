@@ -7,7 +7,7 @@ from qgis.PyQt.QtCore import pyqtSignal, Qt, QRectF, QSize
 from qgis.PyQt.QtGui import QKeySequence, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.PyQt.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox,
     QPushButton, QLabel, QSizePolicy, QFrame, QSlider, QShortcut
 )
 
@@ -72,6 +72,7 @@ class AITracerDock(QDockWidget):
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
     resume_requested = pyqtSignal()   # user pressed "Resume" while paused
     edit_last_requested = pyqtSignal()  # user pressed "Edit last polygon"
+    model_selected = pyqtSignal(str)  # user picked a model key in the combo
     layer_changed = pyqtSignal(object)  # emits the selected QgsVectorLayer or None
 
     def __init__(self, version: str = "", parent=None):
@@ -117,6 +118,21 @@ class AITracerDock(QDockWidget):
         ctrl.setSpacing(6)
 
         ctrl.addWidget(_hline())
+
+        # Segmentation model
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.addWidget(QLabel("Model:"))
+        self._model_combo = QComboBox()
+        self._model_combo.setToolTip(
+            "SAM2.1 model used for segmentation.\n"
+            "Larger models are more accurate but heavier; they are\n"
+            "downloaded the first time you select them."
+        )
+        self._model_combo.activated.connect(self._on_model_activated)
+        model_layout.addWidget(self._model_combo, 1)
+        ctrl.addWidget(model_row)
 
         # Simplification slider (0–50 → 0.00–0.50 map units)
         simplify_row = QWidget()
@@ -363,6 +379,28 @@ class AITracerDock(QDockWidget):
         self._toggle_btn.setChecked(active)
         self._update_edit_shortcut()
         self._update_toggle_label()
+
+    def set_models(self, options: list, current: str):
+        """Fill the model combo with [(key, label), ...] and select *current*."""
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        for key, label in options:
+            self._model_combo.addItem(label, key)
+        self._model_combo.blockSignals(False)
+        self.set_model(current)
+
+    def set_model(self, key: str):
+        """Select *key* without emitting model_selected."""
+        idx = self._model_combo.findData(key)
+        if idx >= 0:
+            self._model_combo.blockSignals(True)
+            self._model_combo.setCurrentIndex(idx)
+            self._model_combo.blockSignals(False)
+
+    def _on_model_activated(self, index: int):
+        key = self._model_combo.itemData(index)
+        if key:
+            self.model_selected.emit(key)
 
     def set_edit_last_enabled(self, enabled: bool):
         self._edit_last_btn.setEnabled(enabled)
