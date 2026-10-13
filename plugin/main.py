@@ -25,6 +25,7 @@ from .preview import PreviewOverlay
 from .dock import AITracerDock, SIMPLIFY_DEFAULT_PX
 from . import backend_client
 from . import python_downloader
+from . import weights_downloader
 
 _logger = logging.getLogger(__name__)
 
@@ -37,13 +38,20 @@ WEIGHTS_DIR = Path.home() / ".aitracer" / "weights"  # persists across reinstall
 BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
 SESSION_IDLE_MS = 5 * 60 * 1000  # 5 minutes — auto-cancel idle sessions
 
-# Segmentation models offered in the dock: key → (label, checkpoint, size in MB).
+# Segmentation models offered in the dock:
+#   key → (label, checkpoint, size in MB, note shown before downloading).
 # Keys match backend/model.py MODELS. The first entry is the default and the
 # only one downloaded during first-time setup; the others are fetched on demand.
 WEIGHTS_BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
 MODEL_OPTIONS = {
-    "tiny":  ("Tiny — fastest (156 MB)",        "sam2.1_hiera_tiny.pt",      156),
-    "base+": ("Base+ — more accurate (324 MB)", "sam2.1_hiera_base_plus.pt", 324),
+    "tiny":  ("Tiny — fastest (156 MB)",
+              "sam2.1_hiera_tiny.pt", 156, ""),
+    "base+": ("Base+ — more accurate (324 MB)",
+              "sam2.1_hiera_base_plus.pt", 324, ""),
+    "large": ("Large — most accurate (898 MB, ~3 GB RAM)",
+              "sam2.1_hiera_large.pt", 898,
+              "It needs about 3 GB of RAM and the first click on each view is "
+              "noticeably slower, especially without a GPU."),
 }
 DEFAULT_MODEL = "tiny"
 MODEL_SETTING = "AITracer/model"
@@ -286,7 +294,7 @@ class VectorizePlugin:
     def _ensure_model_weights(self, key: str) -> bool:
         """Download the checkpoint for *key* if missing (after confirmation).
         Returns True when the file is available."""
-        label, filename, size_mb = MODEL_OPTIONS[key]
+        label, filename, size_mb, note = MODEL_OPTIONS[key]
         checkpoint = WEIGHTS_DIR / filename
         if checkpoint.exists():
             return True
@@ -296,7 +304,8 @@ class VectorizePlugin:
             f"The {label.split(' —')[0]} model is not installed yet.\n\n"
             f"Download it now (about {size_mb} MB) from Meta's SAM 2.1 "
             f"release at dl.fbaipublicfiles.com?\n"
-            f"It is saved in {WEIGHTS_DIR} and downloaded only once.",
+            + (f"{note}\n" if note else "")
+            + f"It is saved in {WEIGHTS_DIR} and downloaded only once.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -304,59 +313,55 @@ class VectorizePlugin:
             return False
 
         url = WEIGHTS_BASE_URL + filename
-        dlg = QProgressDialog(
-            f"Downloading {filename} (~{size_mb} MB)…", None, 0, 0,
-            self._iface.mainWindow(),
-        )
+        title = f"Downloading {filename}…"
+        dlg = QProgressDialog(title, "Cancel", 0, 0, self._iface.mainWindow())
         dlg.setWindowTitle("AITracer — Model download")
         dlg.setMinimumWidth(380)
         dlg.setModal(True)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setMinimumDuration(0)
         dlg.show()
         QApplication.processEvents()
 
-        def _fail(msg: str) -> bool:
-            dlg.close()
-            _log(msg, Qgis.MessageLevel.Critical)
+        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+        part = checkpoint.with_suffix(".pt.part")
+        part.unlink(missing_ok=True)
+
+        # Streams to disk, so memory use stays flat even for the large model.
+        ok, msg = weights_downloader.download_file(url, str(part), dlg, title)
+        dlg.close()
+        if not ok:
+            part.unlink(missing_ok=True)
+            if msg != "Download canceled.":
+                text = (
+                    f"Failed to download {filename}: {msg}\n"
+                    f"You can download it manually from:\n{url}\n"
+                    f"and copy it to:\n{checkpoint}"
+                )
+                _log(text, Qgis.MessageLevel.Critical)
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME, text,
+                    level=Qgis.MessageLevel.Critical, duration=30,
+                )
+            return False
+
+        size = part.stat().st_size
+        if size < size_mb * 1024 * 1024 * 0.9:
+            part.unlink(missing_ok=True)
+            text = (
+                f"Download of {filename} incomplete "
+                f"({size // (1024 * 1024)} MB, expected ~{size_mb} MB). "
+                f"Check your internet connection."
+            )
+            _log(text, Qgis.MessageLevel.Critical)
             self._iface.messageBar().pushMessage(
-                PLUGIN_NAME, msg, level=Qgis.MessageLevel.Critical, duration=30,
+                PLUGIN_NAME, text,
+                level=Qgis.MessageLevel.Critical, duration=30,
             )
             return False
 
-        # Same mechanism as the first-time setup: Qt's network stack honours
-        # the system certificate store and QGIS proxy settings.
-        from qgis.core import QgsBlockingNetworkRequest
-        from qgis.PyQt.QtCore import QUrl
-        from qgis.PyQt.QtNetwork import QNetworkRequest
-
-        req = QgsBlockingNetworkRequest()
-        err = req.get(QNetworkRequest(QUrl(url)))
-        if err != QgsBlockingNetworkRequest.ErrorCode.NoError:
-            return _fail(
-                f"Failed to download {filename}: {req.errorMessage()}\n"
-                f"You can download it manually from:\n{url}\n"
-                f"and copy it to:\n{checkpoint}"
-            )
-
-        content = bytes(req.reply().content().data())
-        if len(content) < size_mb * 1024 * 1024 * 0.9:
-            return _fail(
-                f"Download of {filename} incomplete "
-                f"({len(content) // (1024 * 1024)} MB, expected ~{size_mb} MB). "
-                f"Check your internet connection."
-            )
-
-        dlg.setLabelText("Saving model weights…")
-        QApplication.processEvents()
-        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-        part = checkpoint.with_suffix(".pt.part")
-        try:
-            part.write_bytes(content)
-            part.replace(checkpoint)  # atomic: never a truncated checkpoint
-        except OSError as exc:
-            part.unlink(missing_ok=True)
-            return _fail(f"Failed to save {filename}: {exc}")
-
-        dlg.close()
+        part.replace(checkpoint)  # atomic: never a truncated checkpoint
         return True
 
     def _on_map_tool_set(self, new_tool, _old_tool):
