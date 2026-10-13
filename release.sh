@@ -2,6 +2,7 @@
 # release.sh — interactive release helper for AITracer by LAD
 #
 # Steps
+#   0. Run check.sh (syntax + Bandit) — aborts the release on any finding.
 #   1. Prompt for bump type (major / minor / fix) and a release message.
 #   2. Update version in metadata.txt, main.py, backend/app.py.
 #   3. Stage all modified tracked files, show the diff summary, commit.
@@ -18,6 +19,11 @@ _yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 _red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 _bold()   { printf '\033[1m%s\033[0m\n' "$*"; }
 _confirm() { local a; read -rp "$1 [y/N] " a; [[ "$a" =~ ^[Yy]$ ]]; }
+
+# ── pre-flight validation ─────────────────────────────────────────────────
+_bold "Running pre-release checks…"
+bash ./check.sh || { _red "Checks failed. Fix the issues above and retry."; exit 1; }
+echo ""
 
 # ── read current version ──────────────────────────────────────────────────
 CURRENT=$(grep '^version=' plugin/metadata.txt | cut -d= -f2)
