@@ -91,6 +91,10 @@ class VectorizePlugin:
         self._canvas = iface.mapCanvas()
         self._tool = None
         self._prev_tool = None
+        # (layer_id, feature_id) of the last accepted polygon, for "Edit last".
+        self._last_feature: tuple | None = None
+        # Layer id whose selection was set by "Edit last"; cleared on resume.
+        self._edit_selection_layer_id: str | None = None
         self._dock = None
         self._overlay = None
         self._session = _empty_session()
@@ -129,12 +133,19 @@ class VectorizePlugin:
         self._dock.cancelled.connect(self._on_cancel)
         self._dock.simplify_changed.connect(self._on_simplify_changed)
         self._dock.tool_toggled.connect(self._toggle_tool)
+        self._dock.resume_requested.connect(self._on_resume)
+        self._dock.edit_last_requested.connect(self._on_edit_last)
+        self._canvas.mapToolSet.connect(self._on_map_tool_set)
         self._dock.reset_requested.connect(self._on_reset_backend)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
 
         self._dock.set_status("Activate the tool to start segmentation.")
 
     def unload(self):
+        try:
+            self._canvas.mapToolSet.disconnect(self._on_map_tool_set)
+        except TypeError:
+            pass
         QApplication.instance().removeEventFilter(self._undo_interceptor)
         self._on_cancel()
         # Wait briefly for any in-flight thread to finish before unloading.
@@ -163,8 +174,75 @@ class VectorizePlugin:
             self._dock.select_layer(self._find_aitracer_layer())
         else:
             self._end_session()
-            self._canvas.setMapTool(self._prev_tool or QgsMapToolPan(self._canvas))
+            # Only restore the previous tool if ours is still current; when
+            # paused the user is on another tool (e.g. vertex) — leave it.
+            if self._canvas.mapTool() is self._tool:
+                self._canvas.setMapTool(
+                    self._prev_tool or QgsMapToolPan(self._canvas)
+                )
             self._dock.set_status("Deactivated. Press Activate to start.")
+
+    def _on_map_tool_set(self, new_tool, _old_tool):
+        """Pause when another map tool replaces ours; unpause when we return."""
+        if not self._dock or not self._tool:
+            return
+        if new_tool is self._tool:
+            self._clear_edit_selection()
+            if self._dock.is_paused():
+                self._dock.set_paused(False)
+                self._dock.set_status("Left-click to segment. Right-click to exclude.")
+            return
+        if self._dock.is_tool_active() and not self._dock.is_paused():
+            # Discard any in-progress preview: the locked canvas extent is no
+            # longer reliable once the user edits with another tool.
+            self._on_cancel()
+            self._dock.set_paused(True)
+            self._dock.set_status("Paused. Press Resume to continue tracing.")
+
+    def _on_edit_last(self):
+        """Select the last accepted polygon and hand over to the vertex tool."""
+        layer = fid = None
+        if self._last_feature:
+            layer_id, fid = self._last_feature
+            layer = QgsProject.instance().mapLayer(layer_id)
+        if layer is None or not layer.getFeature(fid).isValid():
+            # Layer removed, or the edits were saved and the feature id changed.
+            self._last_feature = None
+            self._dock.set_edit_last_enabled(False)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME,
+                "The last polygon is no longer available for editing.",
+                level=Qgis.MessageLevel.Warning, duration=5,
+            )
+            return
+
+        # Drop any in-progress preview before leaving the segmentation tool.
+        self._on_cancel()
+        layer.removeSelection()
+        layer.selectByIds([fid])
+        self._edit_selection_layer_id = layer.id()
+        if not layer.isEditable():
+            layer.startEditing()
+        self._iface.setActiveLayer(layer)
+        self._canvas.flashFeatureIds(layer, [fid])
+        # Switching tool triggers _on_map_tool_set, which pauses the plugin.
+        action = (
+            getattr(self._iface, "actionVertexToolActiveLayer", None)
+            or self._iface.actionVertexTool
+        )
+        action().trigger()
+        self._dock.set_status("Edit vertices, then press Resume to continue.")
+
+    def _clear_edit_selection(self):
+        """Drop the selection made by "Edit last" once tracing resumes."""
+        layer_id, self._edit_selection_layer_id = self._edit_selection_layer_id, None
+        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
+        if layer is not None:
+            layer.removeSelection()
+
+    def _on_resume(self):
+        # Re-set our tool only: backend and layer selection are untouched.
+        self._canvas.setMapTool(self._tool)
 
     # ------------------------------------------------------------------ #
     # Backend subprocess management                                       #
@@ -893,6 +971,9 @@ class VectorizePlugin:
         ok = layer.addFeature(feature)
         if ok:
             layer.endEditCommand()
+            # addFeature() updates feature.id() with the edit-buffer id.
+            self._last_feature = (layer.id(), feature.id())
+            self._dock.set_edit_last_enabled(True)
         else:
             layer.destroyEditCommand()
             self._iface.messageBar().pushMessage(

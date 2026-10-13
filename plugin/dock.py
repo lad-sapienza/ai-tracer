@@ -67,12 +67,15 @@ class AITracerDock(QDockWidget):
     simplify_changed = pyqtSignal(float)
     tool_toggled = pyqtSignal(bool)   # True = activate, False = deactivate
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
+    resume_requested = pyqtSignal()   # user pressed "Resume" while paused
+    edit_last_requested = pyqtSignal()  # user pressed "Edit last polygon"
     layer_changed = pyqtSignal(object)  # emits the selected QgsVectorLayer or None
 
     def __init__(self, version: str = "", parent=None):
         super().__init__("AITracer by LAD", parent)
         self.setObjectName("AITracerDock")
         self._tool_active = False
+        self._paused = False
         self._version = version
         self._build_ui()
         self._setup_shortcuts()
@@ -94,6 +97,14 @@ class AITracerDock(QDockWidget):
         self._toggle_btn.clicked.connect(self._on_toggle_clicked)
         self._update_toggle_label()
         layout.addWidget(self._toggle_btn)
+
+        # Shown only while paused (another QGIS map tool is active), so the
+        # user can still deactivate without first resuming.
+        self._stop_btn = QPushButton("⏹  Deactivate")
+        self._stop_btn.setStyleSheet("color: darkred;")
+        self._stop_btn.clicked.connect(self._on_stop_clicked)
+        self._stop_btn.setVisible(False)
+        layout.addWidget(self._stop_btn)
 
         # ── Collapsible controls (hidden until tool is activated) ─────────
         self._controls = QWidget()
@@ -190,6 +201,16 @@ class AITracerDock(QDockWidget):
         btn_layout.addWidget(self._cancel_btn)
         ctrl.addWidget(btn_row)
 
+        # Hands the last accepted polygon over to QGIS's native vertex tool.
+        self._edit_last_btn = QPushButton("✎  Edit last polygon")
+        self._edit_last_btn.setToolTip(
+            "Select the last accepted polygon and switch to QGIS's vertex tool. "
+            "Press Resume afterwards to continue tracing."
+        )
+        self._edit_last_btn.setEnabled(False)
+        self._edit_last_btn.clicked.connect(self.edit_last_requested)
+        ctrl.addWidget(self._edit_last_btn)
+
         # Tips
         tip = QLabel(
             "Left-click: add to selection\n"
@@ -279,12 +300,25 @@ class AITracerDock(QDockWidget):
         self.simplify_changed.emit(tolerance)
 
     def _on_toggle_clicked(self, checked: bool):
+        if self._paused:
+            # The button is checkable; keep it checked while paused.
+            self._toggle_btn.setChecked(True)
+            self.resume_requested.emit()
+            return
         self._tool_active = checked
         self._update_toggle_label()
         self.tool_toggled.emit(checked)
 
+    def _on_stop_clicked(self):
+        self.set_paused(False)
+        self.set_tool_active(False)
+        self.tool_toggled.emit(False)
+
     def _update_toggle_label(self):
-        if self._tool_active:
+        if self._paused:
+            self._toggle_btn.setText("▶  Resume")
+            self._toggle_btn.setStyleSheet("font-weight: bold; color: darkgreen;")
+        elif self._tool_active:
             self._toggle_btn.setText("⏹  Deactivate")
             self._toggle_btn.setStyleSheet("font-weight: bold; color: darkred;")
         else:
@@ -292,6 +326,8 @@ class AITracerDock(QDockWidget):
             self._toggle_btn.setStyleSheet("font-weight: bold; color: darkgreen;")
         if hasattr(self, "_controls"):
             self._controls.setVisible(self._tool_active)
+        if hasattr(self, "_stop_btn"):
+            self._stop_btn.setVisible(self._paused)
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
@@ -300,7 +336,23 @@ class AITracerDock(QDockWidget):
     def set_tool_active(self, active: bool):
         """Sync the toggle button state from main.py (e.g. on cancel/unload)."""
         self._tool_active = active
+        if not active:
+            self._paused = False
         self._toggle_btn.setChecked(active)
+        self._update_toggle_label()
+
+    def set_edit_last_enabled(self, enabled: bool):
+        self._edit_last_btn.setEnabled(enabled)
+
+    def is_tool_active(self) -> bool:
+        return self._tool_active
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool):
+        """Paused = tool is 'on' but another QGIS map tool is currently set."""
+        self._paused = paused and self._tool_active
         self._update_toggle_label()
 
     def simplify_tolerance(self) -> float:

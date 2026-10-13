@@ -35,5 +35,5 @@ hasProcessingProvider=no
 tags=raster,vectorization,vectorisation,digitizing,digitisation,segmentation,instance segmentation,SAM,SAM2,segment anything,AI,machine learning,archaeology,remote sensing,aerial photo,drone
 category=Plugins
 icon=icon.png
-experimental=True
+experimental=False
 deprecated=False
