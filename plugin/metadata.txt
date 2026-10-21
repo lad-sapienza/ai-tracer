@@ -26,7 +26,20 @@ about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 
     Developed by LAD — Laboratorio di Archeologia Digitale,
     Sapienza University of Rome.
-changelog=0.2.2
+changelog=0.3.0
+    - New: model selector in the panel. Choose between SAM2.1 Tiny (default,
+      156 MB), Base+ (324 MB) and Large (898 MB, ~3 GB RAM). Models are
+      downloaded on demand after confirmation, and the backend switches model
+      without restarting. The choice is remembered across sessions.
+    - New: model downloads are streamed to disk with real progress and a working
+      Cancel button (flat memory use even for the Large checkpoint).
+    - New: simplification tolerance is now expressed in screen pixels (0-6 px,
+      default 2.8 px), so its effect no longer depends on zoom level or CRS.
+      Finer steps, live vertex count, value remembered across sessions.
+    - Improved: refining a mask reuses the previous mask as input, so successive
+      clicks change the result far less (more stable masks).
+    - New: "E" keyboard shortcut for "Edit last polygon".
+    0.2.2
     - Fix: Qt6 compatibility, fully qualified QgsBlockingNetworkRequest.ErrorCode.NoError.
     0.2.1
     - Fix: address static-analysis (Bandit) findings: no silent exception
