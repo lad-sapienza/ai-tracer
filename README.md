@@ -17,18 +17,28 @@ then accept it as a vector polygon with a single keystroke.
 ## Features
 
 - **One-click segmentation** — left-click on any raster feature; SAM2 (Segment
-  Anything Model 2, tiny variant) returns a polygon outline in under a second
-  on CPU
+  Anything Model 2.1) returns a polygon outline in well under a second on a
+  GPU and in about a second on CPU
+- **Choice of model** — Tiny (fastest, default), Base+ or Large (most accurate)
+  from a drop-down in the panel; larger models are downloaded the first time
+  you select them (see [Models](#models))
 - **Positive / negative prompts** — left-click to add to the selection,
   right-click to exclude areas; each click refines the mask without re-encoding
-  the image
+  the image, and reuses the previous mask so successive results stay stable
 - **Undo last point** — Ctrl+Z removes the most recently added prompt point
   and re-segments, so you can correct mistakes without starting over
-- **Real-time simplification** — Douglas-Peucker slider (0–0.50 map units,
-  0.01 step) lets you balance vertex density against smoothness before
-  accepting
-- **Keyboard shortcuts** — Enter to accept, Escape to cancel, Ctrl+Z to undo;
-  no need to reach for the mouse
+- **Real-time simplification** — Douglas-Peucker slider in screen pixels
+  (0–6 px, finest control below 3 px, default 2.8 px) with a live vertex count;
+  being in pixels it behaves the same at any zoom level or CRS, and your
+  setting is remembered between sessions
+- **Edit the last polygon** — one click (or **E**) selects the polygon you just
+  accepted and hands it to QGIS's own Vertex tool; no vertex-editing code to
+  learn
+- **Pause / Resume** — switching to another QGIS tool pauses AITracer instead
+  of leaving it out of sync; **Resume** picks up where you left off, with the
+  same model, output layer and field values
+- **Keyboard shortcuts** — Enter to accept, Escape to cancel, Ctrl+Z to undo,
+  E to edit the last polygon; no need to reach for the mouse
 - **Output layer selector** — choose any existing polygon vector layer as the
   destination, or leave it blank to auto-create a dedicated *AITracer* memory
   layer with fields `fid`, `timestamp`, and `raster`
@@ -38,7 +48,8 @@ then accept it as a vector polygon with a single keystroke.
   automatically, freeing backend memory
 - **First-time setup is automatic** — the plugin downloads a standalone Python
   runtime, creates a virtual environment, installs all dependencies, and
-  downloads the SAM2-tiny weights (~40 MB) the first time you activate the tool
+  downloads the SAM2.1-tiny weights (~156 MB) the first time you activate the
+  tool
 - **Canvas-as-input** — the plugin captures a screenshot of the current QGIS
   canvas and sends it to SAM2; it does *not* read the original raster file.
   This keeps processing fast and memory-light on modest hardware, but has
@@ -55,7 +66,8 @@ then accept it as a vector polygon with a single keystroke.
 | QGIS | 4.0 |
 | Python | 3.10 (downloaded automatically via python-build-standalone) |
 | Internet | Required once, for first-time dependency and weight download |
-| RAM | 4 GB recommended (SAM2-tiny runs on CPU) |
+| RAM | 4 GB recommended for Tiny and Base+; about 8 GB for Large |
+| GPU | Optional — Apple Silicon (MPS) and CUDA are used when available, otherwise CPU |
 
 macOS, Linux and Windows are supported.
 
@@ -92,10 +104,12 @@ The first time you click **▶ Activate**, the plugin will:
 1. Download a standalone Python runtime to `~/.aitracer/python_standalone`
 2. Create a virtual environment at `~/.aitracer/venv`
 3. Install FastAPI, uvicorn, PyTorch (CPU), SAM2, OpenCV, and NumPy
-4. Download the SAM2-tiny checkpoint (~40 MB) from Meta's servers
+4. Download the SAM2.1-tiny checkpoint (~156 MB) from Meta's servers
 
 This takes 2–5 minutes depending on your connection. A progress dialog keeps
-you informed. Subsequent activations start in seconds.
+you informed. Subsequent activations start in seconds. The larger models are
+not part of the first-time setup; they are downloaded on demand (see
+[Models](#models)).
 
 If anything goes wrong after an update, use the **⟳ Reset installation**
 button at the bottom of the dock to wipe the venv and reinstall cleanly
@@ -108,15 +122,19 @@ button at the bottom of the dock to wipe the venv and reinstall cleanly
 1. Load a georeferenced raster layer in QGIS.
 2. Open the *AITracer by LAD* dock panel (it appears on the right by default).
 3. Click **▶ Activate** — the panel expands to show all controls.
-4. **Left-click** on a feature in the canvas — a green polygon preview appears.
-5. **Left-click** again to add more context; **right-click** to mark areas to
+4. Optionally pick a **Model** (Tiny is the default and the fastest).
+5. **Left-click** on a feature in the canvas — a green polygon preview appears.
+6. **Left-click** again to add more context; **right-click** to mark areas to
    exclude; **Ctrl+Z** to remove the last point.
-6. Adjust the **Simplify** slider to control vertex density.
-7. Choose the **output layer** from the drop-down (defaults to the AITracer
+7. Adjust the **Simplify** slider to control vertex density.
+8. Choose the **output layer** from the drop-down (defaults to the AITracer
    memory layer; any polygon vector layer in the project can be used).
-8. Press **Enter** (or click **Accept**) to save the polygon. Press **Escape**
+9. Press **Enter** (or click **Accept**) to save the polygon. Press **Escape**
    (or **Cancel**) to discard.
-9. Repeat for the next feature. Click **⏹ Deactivate** when done.
+10. Need to move a vertex? Click **✎ Edit last polygon** (or press **E**), fix
+    it with QGIS's Vertex tool, then press **▶ Resume**. See
+    [Editing and pausing](#editing-and-pausing).
+11. Repeat for the next feature. Click **⏹ Deactivate** when done.
 
 > **Important:** AITracer uses the canvas screenshot as input, not the original
 > raster file. Zoom so the target feature fills the screen before clicking —
@@ -133,6 +151,55 @@ button at the bottom of the dock to wipe the venv and reinstall cleanly
 | Ctrl+Z | Undo last prompt point |
 | Enter / Return | Accept polygon |
 | Escape | Cancel current session |
+| E | Edit the last accepted polygon (when no session is in progress) |
+
+---
+
+## Models
+
+AITracer uses SAM 2.1 and lets you pick the size of the model from the
+**Model** drop-down. Switching is instant once the weights are on disk; the
+first time you choose a model, you are asked to confirm a one-off download
+(streamed to `~/.aitracer/weights/`, with progress and a Cancel button).
+
+| Model | Download | First click | RAM | When to use |
+|-------|----------|-------------|-----|-------------|
+| Tiny (default) | 156 MB | 0.15 s GPU · 0.4 s CPU | ~1–1.5 GB | Everyday digitising, modest hardware |
+| Base+ | 324 MB | 0.3 s GPU · 0.8 s CPU | ~1–2 GB | Cleaner boundaries at little extra cost |
+| Large | 898 MB | 0.5 s GPU · 1.8 s CPU | ~2–3 GB | Hard cases, if you have the RAM |
+
+Timings are indicative, measured on an Apple Silicon Mac (GPU = MPS) on a
+1280×800 canvas. The first click of each view pays the model's full cost (the
+image is encoded once); subsequent refinement clicks take about 10–25 ms for
+every model, so a larger model mainly affects how long you wait after the
+first click.
+
+Your choice is remembered between sessions. Changing the model while a preview
+is on screen cancels that preview, because its cached encoding belongs to the
+previous model.
+
+---
+
+## Editing and pausing
+
+### Edit the last polygon
+
+After accepting a polygon, **✎ Edit last polygon** (shortcut **E**) selects it,
+makes its layer current and switches to QGIS's Vertex tool. Move, add or delete
+vertices as usual, then press **▶ Resume** to go back to tracing; the selection
+is cleared automatically. Layer undo (Ctrl+Z in QGIS) reverts your edits.
+
+If the layer's edits have been saved in the meantime, or the layer has been
+removed, the polygon can no longer be found and the button is disabled.
+
+### Pause and Resume
+
+Whenever you pick another QGIS tool while AITracer is active — the Vertex tool,
+Identify, Pan, anything — AITracer **pauses**: the polygon preview in progress
+is discarded and the button becomes **▶ Resume**. Resume re-activates the
+tracing tool without restarting anything, so the model, the output layer and
+the field values you set are unchanged. While paused, **⏹ Deactivate** is also
+available and leaves your current tool alone.
 
 ---
 
@@ -222,10 +289,12 @@ plugin/                  QGIS plugin (Python / PyQt6)
   preview.py             QgsRubberBand overlay
   backend_client.py      HTTP client for the local backend
   python_downloader.py   Downloads python-build-standalone on first run
+  weights_downloader.py  Streams model checkpoints to disk (QgsFileDownloader)
   segmentation_worker.py Runs backend calls on a QThread
   backend/               FastAPI backend (runs as a subprocess)
-    app.py               /health and /segment endpoints
-    model.py             SAM2ImagePredictor wrapper with session cache
+    app.py               /health, /segment, /load and /clear endpoints
+    model.py             SAM2ImagePredictor wrapper: session cache, mask
+                         refinement, runtime model switching
     utils.py             Mask → polygon conversion (cv2 contours)
 ```
 

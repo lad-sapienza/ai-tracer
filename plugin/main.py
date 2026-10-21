@@ -11,20 +11,21 @@ from pathlib import Path
 from qgis.core import (
     QgsGeometry, QgsMessageLog, Qgis,
     QgsProject, QgsVectorLayer, QgsVectorLayerUtils,
-    QgsFillSymbol, QgsSingleSymbolRenderer,
+    QgsFillSymbol, QgsSingleSymbolRenderer, QgsSettings,
 )
 from qgis.gui import QgsMapToolPan
 from qgis.PyQt.QtCore import Qt, QEvent, QObject, QThread, QTimer
-from qgis.PyQt.QtWidgets import QApplication, QProgressDialog
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from .map_tool import SegmentationTool
 from .segmentation_worker import SegmentationWorker
 from .canvas_capture import capture_base64
 from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
-from .dock import AITracerDock
+from .dock import AITracerDock, SIMPLIFY_DEFAULT_PX
 from . import backend_client
 from . import python_downloader
+from . import weights_downloader
 
 _logger = logging.getLogger(__name__)
 
@@ -36,6 +37,27 @@ VENV_DIR = Path.home() / ".aitracer" / "venv"      # outside QGIS-watched paths
 WEIGHTS_DIR = Path.home() / ".aitracer" / "weights"  # persists across reinstalls
 BACKEND_PORT = 8765             # fallback; a free port is chosen at runtime
 SESSION_IDLE_MS = 5 * 60 * 1000  # 5 minutes — auto-cancel idle sessions
+
+# Segmentation models offered in the dock:
+#   key → (label, checkpoint, size in MB, note shown before downloading).
+# Keys match backend/model.py MODELS. The first entry is the default and the
+# only one downloaded during first-time setup; the others are fetched on demand.
+WEIGHTS_BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/"
+MODEL_OPTIONS = {
+    "tiny":  ("Tiny — fastest (156 MB)",
+              "sam2.1_hiera_tiny.pt", 156, ""),
+    "base+": ("Base+ — more accurate (324 MB)",
+              "sam2.1_hiera_base_plus.pt", 324, ""),
+    "large": ("Large — most accurate (898 MB, ~3 GB RAM)",
+              "sam2.1_hiera_large.pt", 898,
+              "It needs about 3 GB of RAM and the first click on each view is "
+              "noticeably slower, especially without a GPU."),
+}
+DEFAULT_MODEL = "tiny"
+MODEL_SETTING = "AITracer/model"
+# Stored in pixels (not slider steps) so the saved value survives changes to
+# the slider curve.
+SIMPLIFY_SETTING = "AITracer/simplify_px"
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -96,6 +118,7 @@ class VectorizePlugin:
         self._prev_tool = None
         # (layer_id, feature_id) of the last accepted polygon, for "Edit last".
         self._last_feature: tuple | None = None
+        self._model_key: str = DEFAULT_MODEL
         # Layer id whose selection was set by "Edit last"; cleared on resume.
         self._edit_selection_layer_id: str | None = None
         self._dock = None
@@ -138,6 +161,16 @@ class VectorizePlugin:
         self._dock.tool_toggled.connect(self._toggle_tool)
         self._dock.resume_requested.connect(self._on_resume)
         self._dock.edit_last_requested.connect(self._on_edit_last)
+        self._dock.model_selected.connect(self._on_model_selected)
+        try:
+            px = float(QgsSettings().value(SIMPLIFY_SETTING, SIMPLIFY_DEFAULT_PX))
+        except (TypeError, ValueError):
+            px = SIMPLIFY_DEFAULT_PX
+        self._dock.set_simplify_px(px)
+        self._model_key = self._desired_model()
+        self._dock.set_models(
+            [(k, v[0]) for k, v in MODEL_OPTIONS.items()], self._model_key
+        )
         self._canvas.mapToolSet.connect(self._on_map_tool_set)
         self._dock.reset_requested.connect(self._on_reset_backend)
         self._iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._dock)
@@ -170,6 +203,7 @@ class VectorizePlugin:
             if not self._ensure_backend():
                 self._dock.set_tool_active(False)
                 return
+            self._sync_backend_model()
             self._prev_tool = self._canvas.mapTool()
             self._canvas.setMapTool(self._tool)
             self._dock.set_status("Left-click to segment. Right-click to exclude.")
@@ -184,6 +218,151 @@ class VectorizePlugin:
                     self._prev_tool or QgsMapToolPan(self._canvas)
                 )
             self._dock.set_status("Deactivated. Press Activate to start.")
+
+    # ------------------------------------------------------------------ #
+    # Model selection                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _desired_model(self) -> str:
+        """Saved model choice, if valid and its weights are on disk."""
+        key = QgsSettings().value(MODEL_SETTING, DEFAULT_MODEL)
+        if key in MODEL_OPTIONS and (WEIGHTS_DIR / MODEL_OPTIONS[key][1]).exists():
+            return key
+        return DEFAULT_MODEL
+
+    def _sync_backend_model(self):
+        """Make the running backend use the saved model (it may have been
+        started earlier with a different one)."""
+        want = self._desired_model()
+        have = backend_client.current_model()
+        if have is not None and have != want:
+            self._load_backend_model(want)
+        self._model_key = want
+        self._dock.set_model(want)
+
+    def _load_backend_model(self, key: str) -> bool:
+        """Ask the backend to load *key*, showing a busy cursor. Returns
+        True on success; on failure shows a message and returns False."""
+        self._dock.set_status(
+            f"Loading model {MODEL_OPTIONS[key][0].split(' —')[0]}…"
+        )
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            backend_client.load_model(key)
+            return True
+        except backend_client.BackendError as exc:
+            _log(f"Model load failed: {exc}", Qgis.MessageLevel.Critical)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME, f"Could not load model: {exc}",
+                level=Qgis.MessageLevel.Critical, duration=10,
+            )
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _on_model_selected(self, key: str):
+        previous = self._model_key
+        if key == previous or key not in MODEL_OPTIONS:
+            return
+        if self._busy:
+            self._dock.set_model(previous)
+            self._dock.set_status("Wait for the current segmentation to finish.")
+            return
+
+        # Any preview belongs to the old model's embedding.
+        if self._session.get("active"):
+            self._on_cancel()
+
+        if not self._ensure_model_weights(key):
+            self._dock.set_model(previous)
+            return
+
+        # Backend not running yet: it will start with the saved model.
+        if backend_client.health() is not None:
+            if not self._load_backend_model(key):
+                self._dock.set_model(previous)
+                self._dock.set_status("Model not changed.")
+                return
+
+        QgsSettings().setValue(MODEL_SETTING, key)
+        self._model_key = key
+        self._dock.set_status(
+            f"Model: {MODEL_OPTIONS[key][0].split(' —')[0]}. Left-click to segment."
+        )
+
+    def _ensure_model_weights(self, key: str) -> bool:
+        """Download the checkpoint for *key* if missing (after confirmation).
+        Returns True when the file is available."""
+        label, filename, size_mb, note = MODEL_OPTIONS[key]
+        checkpoint = WEIGHTS_DIR / filename
+        if checkpoint.exists():
+            return True
+
+        answer = QMessageBox.question(
+            self._iface.mainWindow(), PLUGIN_NAME,
+            f"The {label.split(' —')[0]} model is not installed yet.\n\n"
+            f"Download it now (about {size_mb} MB) from Meta's SAM 2.1 "
+            f"release at dl.fbaipublicfiles.com?\n"
+            + (f"{note}\n" if note else "")
+            + f"It is saved in {WEIGHTS_DIR} and downloaded only once.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+
+        url = WEIGHTS_BASE_URL + filename
+        title = f"Downloading {filename}…"
+        dlg = QProgressDialog(title, "Cancel", 0, 0, self._iface.mainWindow())
+        dlg.setWindowTitle("AITracer — Model download")
+        dlg.setMinimumWidth(380)
+        dlg.setModal(True)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        QApplication.processEvents()
+
+        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+        part = checkpoint.with_suffix(".pt.part")
+        part.unlink(missing_ok=True)
+
+        # Streams to disk, so memory use stays flat even for the large model.
+        ok, msg = weights_downloader.download_file(url, str(part), dlg, title)
+        dlg.close()
+        if not ok:
+            part.unlink(missing_ok=True)
+            if msg != "Download canceled.":
+                text = (
+                    f"Failed to download {filename}: {msg}\n"
+                    f"You can download it manually from:\n{url}\n"
+                    f"and copy it to:\n{checkpoint}"
+                )
+                _log(text, Qgis.MessageLevel.Critical)
+                self._iface.messageBar().pushMessage(
+                    PLUGIN_NAME, text,
+                    level=Qgis.MessageLevel.Critical, duration=30,
+                )
+            return False
+
+        size = part.stat().st_size
+        if size < size_mb * 1024 * 1024 * 0.9:
+            part.unlink(missing_ok=True)
+            text = (
+                f"Download of {filename} incomplete "
+                f"({size // (1024 * 1024)} MB, expected ~{size_mb} MB). "
+                f"Check your internet connection."
+            )
+            _log(text, Qgis.MessageLevel.Critical)
+            self._iface.messageBar().pushMessage(
+                PLUGIN_NAME, text,
+                level=Qgis.MessageLevel.Critical, duration=30,
+            )
+            return False
+
+        part.replace(checkpoint)  # atomic: never a truncated checkpoint
+        return True
 
     def _on_map_tool_set(self, new_tool, _old_tool):
         """Pause when another map tool replaces ours; unpause when we return."""
@@ -538,7 +717,7 @@ class VectorizePlugin:
             "cwd": str(BACKEND_DIR),
             "stdout": open(log_file, "w"),
             "stderr": subprocess.STDOUT,
-            "env": _clean_env(),
+            "env": {**_clean_env(), "AITRACER_MODEL": self._desired_model()},
         }
         if sys.platform == "win32":
             popen_kw["startupinfo"] = _win_startupinfo()
@@ -817,12 +996,22 @@ class VectorizePlugin:
         raw = self._session.get("raw_polygon_geo")
         if not raw:
             return
-        tolerance = self._dock.simplify_tolerance()
+        # The slider is in screen pixels; the polygon is in map units.
+        # The mask lives in physical image pixels, hence the division by dpr.
+        mtp = self._session.get("mtp")
+        dpr = self._session.get("dpr") or 1.0
+        units_per_px = mtp.mapUnitsPerPixel() / dpr if mtp else 0.0
+        tolerance = self._dock.simplify_tolerance() * units_per_px
         simplified = simplify_polygon_geo(raw, tolerance)
         self._session["current_polygon_geo"] = simplified
+        n = len(simplified)
+        if n > 1 and simplified[0] == simplified[-1]:
+            n -= 1   # closing vertex repeats the first one
+        self._dock.set_vertex_count(n)
         self._overlay.show(simplified)
 
     def _on_simplify_changed(self, _value: float):
+        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_tolerance())
         if self._session["active"]:
             self._update_preview()
 
@@ -933,6 +1122,7 @@ class VectorizePlugin:
             self._tool.set_session_active(False)
         if self._dock:
             self._dock.set_session_active(False)
+            self._dock.set_vertex_count(None)
 
     # ------------------------------------------------------------------ #
     # Feature insertion                                                   #

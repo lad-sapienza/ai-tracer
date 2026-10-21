@@ -40,6 +40,10 @@ class SegmentResponse(BaseModel):
     confidence: float
 
 
+class LoadRequest(BaseModel):
+    model: str                        # key in model.MODELS, e.g. "base+"
+
+
 class ClearRequest(BaseModel):
     session_id: str
 
@@ -50,7 +54,24 @@ class ClearRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "sam2-tiny", "version": APP_VERSION}
+    name = _model.name if _model else None
+    return {"status": "ok", "model": f"sam2.1-{name}" if name else None,
+            "model_key": name, "version": APP_VERSION}
+
+
+@app.post("/load")
+def load_model(req: LoadRequest):
+    if _model is None:
+        raise HTTPException(503, detail="Model not loaded.")
+    try:
+        _model.load(req.model)
+    except ValueError as e:
+        raise HTTPException(422, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(500, detail=f"Model load failed: {e}")
+    return {"model_key": _model.name}
 
 
 @app.post("/segment", response_model=SegmentResponse)

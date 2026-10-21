@@ -7,7 +7,7 @@ from qgis.PyQt.QtCore import pyqtSignal, Qt, QRectF, QSize
 from qgis.PyQt.QtGui import QKeySequence, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.PyQt.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox,
     QPushButton, QLabel, QSizePolicy, QFrame, QSlider, QShortcut
 )
 
@@ -23,6 +23,26 @@ _LOGO_PATH = str(Path(__file__).resolve().parent / "ui" / "tracer-by-lad.svg")
 # Fields the plugin fills automatically on insert (see main._insert_feature);
 # they are never shown in the field-values panel.
 AUTO_FIELDS = {"fid", "timestamp", "raster"}
+
+# Simplification slider: 0–SIMPLIFY_STEPS maps to 0–SIMPLIFY_MAX_PX screen
+# pixels with a power curve, so the fine range (0.5–3 px, where the vertex
+# count drops fastest) gets most of the slider travel and the usual working
+# point sits mid-slider. Pixels, not map units, so the slider means the same
+# thing at any zoom level or CRS.
+SIMPLIFY_STEPS = 100
+SIMPLIFY_MAX_PX = 6.0
+SIMPLIFY_EXPONENT = 1.5
+SIMPLIFY_DEFAULT_PX = 2.8
+
+
+def simplify_px(step: int) -> float:
+    return SIMPLIFY_MAX_PX * (step / SIMPLIFY_STEPS) ** SIMPLIFY_EXPONENT
+
+
+def simplify_step_for(px: float) -> int:
+    """Slider step whose tolerance is closest to *px* (inverse of simplify_px)."""
+    px = max(0.0, min(SIMPLIFY_MAX_PX, px))
+    return round(SIMPLIFY_STEPS * (px / SIMPLIFY_MAX_PX) ** (1 / SIMPLIFY_EXPONENT))
 
 
 def _is_unset(value) -> bool:
@@ -72,6 +92,7 @@ class AITracerDock(QDockWidget):
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
     resume_requested = pyqtSignal()   # user pressed "Resume" while paused
     edit_last_requested = pyqtSignal()  # user pressed "Edit last polygon"
+    model_selected = pyqtSignal(str)  # user picked a model key in the combo
     layer_changed = pyqtSignal(object)  # emits the selected QgsVectorLayer or None
 
     def __init__(self, version: str = "", parent=None):
@@ -79,6 +100,7 @@ class AITracerDock(QDockWidget):
         self.setObjectName("AITracerDock")
         self._tool_active = False
         self._paused = False
+        self._session_active = False
         self._version = version
         self._build_ui()
         self._setup_shortcuts()
@@ -117,24 +139,42 @@ class AITracerDock(QDockWidget):
 
         ctrl.addWidget(_hline())
 
+        # Segmentation model
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.addWidget(QLabel("Model:"))
+        self._model_combo = QComboBox()
+        self._model_combo.setToolTip(
+            "SAM2.1 model used for segmentation.\n"
+            "Larger models are more accurate but heavier; they are\n"
+            "downloaded the first time you select them."
+        )
+        self._model_combo.activated.connect(self._on_model_activated)
+        model_layout.addWidget(self._model_combo, 1)
+        ctrl.addWidget(model_row)
+
         # Simplification slider (0–50 → 0.00–0.50 map units)
         simplify_row = QWidget()
         simplify_layout = QHBoxLayout(simplify_row)
         simplify_layout.setContentsMargins(0, 0, 0, 0)
         simplify_layout.addWidget(QLabel("Simplify:"))
         self._simplify_slider = QSlider(Qt.Orientation.Horizontal)
-        self._simplify_slider.setRange(0, 50)
-        self._simplify_slider.setValue(0)
+        self._simplify_slider.setRange(0, SIMPLIFY_STEPS)
+        self._simplify_slider.setValue(simplify_step_for(SIMPLIFY_DEFAULT_PX))
         self._simplify_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._simplify_slider.setTickInterval(5)
+        self._simplify_slider.setTickInterval(10)
         self._simplify_slider.setToolTip(
-            "Douglas-Peucker simplification tolerance.\n"
-            "0 = no simplification  |  50 = 0.50 map units"
+            "Douglas-Peucker simplification tolerance, in screen pixels.\n"
+            "0 = every contour pixel  |  fine control below 3 px\n"
+            "Independent of zoom level and CRS."
         )
         self._simplify_slider.valueChanged.connect(self._on_simplify_slider)
         simplify_layout.addWidget(self._simplify_slider)
-        self._simplify_value_label = QLabel("0.00")
-        self._simplify_value_label.setFixedWidth(30)
+        self._vertex_count = None
+        self._simplify_value_label = QLabel()
+        self._simplify_value_label.setMinimumWidth(80)
+        self._refresh_simplify_label()
         simplify_layout.addWidget(self._simplify_value_label)
         ctrl.addWidget(simplify_row)
 
@@ -205,10 +245,10 @@ class AITracerDock(QDockWidget):
         ctrl.addWidget(btn_row)
 
         # Hands the last accepted polygon over to QGIS's native vertex tool.
-        self._edit_last_btn = QPushButton("✎  Edit last polygon")
+        self._edit_last_btn = QPushButton("✎  Edit last polygon (E)")
         self._edit_last_btn.setToolTip(
-            "Select the last accepted polygon and switch to QGIS's vertex tool. "
-            "Press Resume afterwards to continue tracing."
+            "Select the last accepted polygon and switch to QGIS's vertex tool "
+            "(shortcut: E). Press Resume afterwards to continue tracing."
         )
         self._edit_last_btn.setEnabled(False)
         self._edit_last_btn.clicked.connect(self.edit_last_requested)
@@ -220,6 +260,7 @@ class AITracerDock(QDockWidget):
             "Right-click: remove from selection\n"
             "Ctrl+Z: undo last point\n"
             "Enter: accept — Escape: cancel\n"
+            "E: edit last accepted polygon\n"
             "Tip: keep only the raster layer visible."
         )
         tip.setWordWrap(True)
@@ -293,14 +334,35 @@ class AITracerDock(QDockWidget):
         self._sc_cancel.setEnabled(False)
         self._sc_cancel.activated.connect(self.cancelled)
 
+        # E = edit last polygon. Enabled only while the button is usable and
+        # no segmentation session is running, so a stray key press can't
+        # discard a preview. Text fields keep receiving the letter normally
+        # (Qt lets editing widgets claim printable keys before shortcuts).
+        self._sc_edit = QShortcut(QKeySequence(Qt.Key.Key_E), self)
+        self._sc_edit.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._sc_edit.setEnabled(False)
+        self._sc_edit.activated.connect(self.edit_last_requested)
+
+    def _update_edit_shortcut(self):
+        self._sc_edit.setEnabled(
+            self._edit_last_btn.isEnabled()
+            and self._tool_active
+            and not self._session_active
+        )
+
     # ------------------------------------------------------------------ #
     # Private slots                                                        #
     # ------------------------------------------------------------------ #
 
     def _on_simplify_slider(self, value: int):
-        tolerance = value * 0.01
-        self._simplify_value_label.setText(f"{tolerance:.2f}")
-        self.simplify_changed.emit(tolerance)
+        self._refresh_simplify_label()
+        self.simplify_changed.emit(simplify_px(value))
+
+    def _refresh_simplify_label(self):
+        text = f"{self.simplify_tolerance():.1f} px"
+        if self._vertex_count is not None:
+            text += f" · {self._vertex_count} pts"
+        self._simplify_value_label.setText(text)
 
     def _on_toggle_clicked(self, checked: bool):
         if self._paused:
@@ -310,6 +372,7 @@ class AITracerDock(QDockWidget):
             return
         self._tool_active = checked
         self._update_toggle_label()
+        self._update_edit_shortcut()
         self.tool_toggled.emit(checked)
 
     def _on_stop_clicked(self):
@@ -342,10 +405,34 @@ class AITracerDock(QDockWidget):
         if not active:
             self._paused = False
         self._toggle_btn.setChecked(active)
+        self._update_edit_shortcut()
         self._update_toggle_label()
+
+    def set_models(self, options: list, current: str):
+        """Fill the model combo with [(key, label), ...] and select *current*."""
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        for key, label in options:
+            self._model_combo.addItem(label, key)
+        self._model_combo.blockSignals(False)
+        self.set_model(current)
+
+    def set_model(self, key: str):
+        """Select *key* without emitting model_selected."""
+        idx = self._model_combo.findData(key)
+        if idx >= 0:
+            self._model_combo.blockSignals(True)
+            self._model_combo.setCurrentIndex(idx)
+            self._model_combo.blockSignals(False)
+
+    def _on_model_activated(self, index: int):
+        key = self._model_combo.itemData(index)
+        if key:
+            self.model_selected.emit(key)
 
     def set_edit_last_enabled(self, enabled: bool):
         self._edit_last_btn.setEnabled(enabled)
+        self._update_edit_shortcut()
 
     def is_tool_active(self) -> bool:
         return self._tool_active
@@ -359,7 +446,20 @@ class AITracerDock(QDockWidget):
         self._update_toggle_label()
 
     def simplify_tolerance(self) -> float:
-        return self._simplify_slider.value() * 0.01
+        """Current tolerance in screen pixels."""
+        return simplify_px(self._simplify_slider.value())
+
+    def set_simplify_px(self, px: float):
+        """Restore a saved tolerance without emitting simplify_changed."""
+        self._simplify_slider.blockSignals(True)
+        self._simplify_slider.setValue(simplify_step_for(px))
+        self._simplify_slider.blockSignals(False)
+        self._refresh_simplify_label()
+
+    def set_vertex_count(self, count):
+        """Show the vertex count of the current preview (None to hide)."""
+        self._vertex_count = count
+        self._refresh_simplify_label()
 
     def set_status(self, text: str):
         self._status_label.setText(text)
@@ -485,6 +585,8 @@ class AITracerDock(QDockWidget):
             self._layer_combo.setLayer(layer)
 
     def set_session_active(self, active: bool):
+        self._session_active = active
+        self._update_edit_shortcut()
         self._accept_btn.setEnabled(active)
         self._cancel_btn.setEnabled(active)
         self._sc_accept.setEnabled(active)
