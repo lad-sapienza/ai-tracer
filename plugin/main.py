@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from qgis.core import (
-    QgsGeometry, QgsMessageLog, Qgis,
+    QgsFeatureRequest, QgsGeometry, QgsMessageLog, Qgis,
     QgsProject, QgsVectorLayer, QgsVectorLayerUtils,
     QgsFillSymbol, QgsSingleSymbolRenderer, QgsSettings,
 )
@@ -22,7 +22,8 @@ from .segmentation_worker import SegmentationWorker
 from .canvas_capture import capture_base64
 from .geometry import geo_to_pixel, polygon_pixel_to_geo, simplify_polygon_geo
 from .preview import PreviewOverlay
-from .dock import AITracerDock, SIMPLIFY_DEFAULT_PX
+from .dock import AITracerDock, SIMPLIFY_DEFAULT_PX, SNAP_DEFAULT_PX
+from .snapping import snap_polygon
 from . import backend_client
 from . import python_downloader
 from . import weights_downloader
@@ -58,6 +59,8 @@ MODEL_SETTING = "AITracer/model"
 # Stored in pixels (not slider steps) so the saved value survives changes to
 # the slider curve.
 SIMPLIFY_SETTING = "AITracer/simplify_px"
+SNAP_ENABLED_SETTING = "AITracer/snap_enabled"
+SNAP_SETTING = "AITracer/snap_px"
 
 # Windows venv uses Scripts\, Unix uses bin/
 _VENV_BIN = "Scripts" if sys.platform == "win32" else "bin"
@@ -158,6 +161,8 @@ class VectorizePlugin:
         self._dock.accepted.connect(self._on_accept)
         self._dock.cancelled.connect(self._on_cancel)
         self._dock.simplify_changed.connect(self._on_simplify_changed)
+        self._dock.snap_changed.connect(self._on_snap_changed)
+        self._dock.layer_changed.connect(lambda _layer: self._refresh_preview())
         self._dock.tool_toggled.connect(self._toggle_tool)
         self._dock.resume_requested.connect(self._on_resume)
         self._dock.edit_last_requested.connect(self._on_edit_last)
@@ -167,6 +172,15 @@ class VectorizePlugin:
         except (TypeError, ValueError):
             px = SIMPLIFY_DEFAULT_PX
         self._dock.set_simplify_px(px)
+        settings = QgsSettings()
+        try:
+            snap_px = float(settings.value(SNAP_SETTING, SNAP_DEFAULT_PX))
+        except (TypeError, ValueError):
+            snap_px = SNAP_DEFAULT_PX
+        self._dock.set_snap(
+            str(settings.value(SNAP_ENABLED_SETTING, "false")).lower() == "true",
+            snap_px,
+        )
         self._model_key = self._desired_model()
         self._dock.set_models(
             [(k, v[0]) for k, v in MODEL_OPTIONS.items()], self._model_key
@@ -1003,6 +1017,7 @@ class VectorizePlugin:
         units_per_px = mtp.mapUnitsPerPixel() / dpr if mtp else 0.0
         tolerance = self._dock.simplify_tolerance() * units_per_px
         simplified = simplify_polygon_geo(raw, tolerance)
+        simplified = self._snap_to_neighbours(simplified, units_per_px)
         self._session["current_polygon_geo"] = simplified
         n = len(simplified)
         if n > 1 and simplified[0] == simplified[-1]:
@@ -1010,10 +1025,54 @@ class VectorizePlugin:
         self._dock.set_vertex_count(n)
         self._overlay.show(simplified)
 
-    def _on_simplify_changed(self, _value: float):
-        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_tolerance())
+    def _refresh_preview(self):
         if self._session["active"]:
             self._update_preview()
+
+    def _on_simplify_changed(self, _value: float):
+        QgsSettings().setValue(SIMPLIFY_SETTING, self._dock.simplify_tolerance())
+        self._refresh_preview()
+
+    def _on_snap_changed(self):
+        settings = QgsSettings()
+        settings.setValue(SNAP_ENABLED_SETTING, self._dock.snap_enabled())
+        settings.setValue(SNAP_SETTING, self._dock.snap_tolerance())
+        self._refresh_preview()
+
+    def _snap_to_neighbours(self, polygon: list, units_per_px: float) -> list:
+        """Snap *polygon* to the target layer's polygons, if enabled.
+
+        The neighbour geometry edits that go with the snapped outline are kept
+        in the session and applied by _insert_feature.
+        """
+        self._session["snap_layer_id"] = None
+        self._session["snap_updates"] = {}
+        if not self._dock.snap_enabled() or units_per_px <= 0:
+            return polygon
+        layer = self._dock.selected_layer() or self._find_aitracer_layer()
+        if layer is None or \
+                layer.geometryType() != Qgis.GeometryType.Polygon or \
+                layer.crs() != self._canvas.mapSettings().destinationCrs():
+            return polygon
+        tolerance = self._dock.snap_tolerance() * units_per_px
+        area = QgsGeometry.fromPolygonXY([polygon]).boundingBox()
+        area.grow(tolerance)
+        request = QgsFeatureRequest().setFilterRect(area)
+        neighbors = {
+            f.id(): f.geometry() for f in layer.getFeatures(request)
+            if f.hasGeometry()
+        }
+        try:
+            result = snap_polygon(polygon, neighbors, tolerance)
+        except Exception as exc:   # never let snapping break the preview
+            _log(f"Snapping failed, using the unsnapped outline: {exc}",
+                 Qgis.MessageLevel.Warning)
+            return polygon
+        if not result.changed:
+            return polygon
+        self._session["snap_layer_id"] = layer.id()
+        self._session["snap_updates"] = result.neighbor_updates
+        return result.polygon
 
     def _on_undo(self):
         """Remove the most recently added prompt point and re-segment.
@@ -1165,6 +1224,11 @@ class VectorizePlugin:
 
         layer.beginEditCommand("Add segmented feature")
         ok = layer.addFeature(feature)
+        if ok and self._session.get("snap_layer_id") == layer.id():
+            # Same command, so one undo removes the polygon and the vertices
+            # added to its neighbours.
+            for fid, geom in self._session["snap_updates"].items():
+                layer.changeGeometry(fid, geom)
         if ok:
             layer.endEditCommand()
             # addFeature() updates feature.id() with the edit-buffer id.
@@ -1248,4 +1312,8 @@ def _empty_session() -> dict:
         "current_polygon_geo": [],
         "raster_name": "",
         "session_id": None,
+        # Layer the preview was snapped against and the neighbour geometries
+        # to update with it (feature id → QgsGeometry); see _snap_to_neighbours.
+        "snap_layer_id": None,
+        "snap_updates": {},
     }
