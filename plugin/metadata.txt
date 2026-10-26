@@ -26,7 +26,16 @@ about=AITracer by LAD brings AI-assisted raster digitization to QGIS 4.
 
     Developed by LAD — Laboratorio di Archeologia Digitale,
     Sapienza University of Rome.
-changelog=0.3.0
+changelog=0.4.0
+    - New: "Snap to neighbours" option. The new polygon shares its boundary with
+      polygons already in the output layer: overlaps are cut, small gaps are
+      closed, and the outline follows one coherent perimeter across several
+      neighbours (like QGIS's tracing tool). Matching vertices are added to the
+      neighbours without changing their shape, so the layer stays topologically
+      valid. Snap distance is set in screen pixels; the choice is remembered.
+      One undo reverts the new polygon and the vertices added to neighbours.
+    - Fix: deprecated QgsEditorWidgetWrapper.setValue() replaced by setValues().
+    0.3.0
     - New: model selector in the panel. Choose between SAM2.1 Tiny (default,
       156 MB), Base+ (324 MB) and Large (898 MB, ~3 GB RAM). Models are
       downloaded on demand after confirmation, and the backend switches model

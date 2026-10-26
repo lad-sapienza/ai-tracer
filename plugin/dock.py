@@ -8,7 +8,8 @@ from qgis.PyQt.QtGui import QKeySequence, QPainter
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox,
-    QPushButton, QLabel, QSizePolicy, QFrame, QSlider, QShortcut
+    QPushButton, QLabel, QSizePolicy, QFrame, QSlider, QShortcut, QCheckBox,
+    QDoubleSpinBox
 )
 
 try:
@@ -33,6 +34,11 @@ SIMPLIFY_STEPS = 100
 SIMPLIFY_MAX_PX = 6.0
 SIMPLIFY_EXPONENT = 1.5
 SIMPLIFY_DEFAULT_PX = 2.8
+
+# Snap-to-neighbours tolerance, in screen pixels.
+SNAP_DEFAULT_PX = 8.0
+SNAP_MIN_PX = 1.0
+SNAP_MAX_PX = 40.0
 
 
 def simplify_px(step: int) -> float:
@@ -88,6 +94,7 @@ class AITracerDock(QDockWidget):
     accepted = pyqtSignal()
     cancelled = pyqtSignal()
     simplify_changed = pyqtSignal(float)
+    snap_changed = pyqtSignal()       # snap toggle or tolerance edited
     tool_toggled = pyqtSignal(bool)   # True = activate, False = deactivate
     reset_requested = pyqtSignal()    # user pressed "Reset installation"
     resume_requested = pyqtSignal()   # user pressed "Resume" while paused
@@ -177,6 +184,35 @@ class AITracerDock(QDockWidget):
         self._refresh_simplify_label()
         simplify_layout.addWidget(self._simplify_value_label)
         ctrl.addWidget(simplify_row)
+
+        # Topological snapping to polygons already in the output layer
+        snap_row = QWidget()
+        snap_layout = QHBoxLayout(snap_row)
+        snap_layout.setContentsMargins(0, 0, 0, 0)
+        self._snap_check = QCheckBox("Snap to neighbours")
+        self._snap_check.setToolTip(
+            "Make the new polygon share its boundary with polygons already\n"
+            "in the output layer: overlaps are cut, small gaps are closed,\n"
+            "and matching vertices are added to the neighbours (their shape\n"
+            "does not change). Needs the layer to use the map's CRS."
+        )
+        self._snap_check.toggled.connect(self._on_snap_edited)
+        snap_layout.addWidget(self._snap_check)
+        snap_layout.addStretch(1)
+        self._snap_spin = QDoubleSpinBox()
+        self._snap_spin.setRange(SNAP_MIN_PX, SNAP_MAX_PX)
+        self._snap_spin.setDecimals(1)
+        self._snap_spin.setSingleStep(1.0)
+        self._snap_spin.setSuffix(" px")
+        self._snap_spin.setValue(SNAP_DEFAULT_PX)
+        self._snap_spin.setEnabled(False)
+        self._snap_spin.setToolTip(
+            "Snap distance in screen pixels: outline edges closer than this\n"
+            "to a neighbour's boundary are attached to it."
+        )
+        self._snap_spin.valueChanged.connect(self._on_snap_edited)
+        snap_layout.addWidget(self._snap_spin)
+        ctrl.addWidget(snap_row)
 
         ctrl.addWidget(_hline())
 
@@ -354,6 +390,10 @@ class AITracerDock(QDockWidget):
     # Private slots                                                        #
     # ------------------------------------------------------------------ #
 
+    def _on_snap_edited(self, *_):
+        self._snap_spin.setEnabled(self._snap_check.isChecked())
+        self.snap_changed.emit()
+
     def _on_simplify_slider(self, value: int):
         self._refresh_simplify_label()
         self.simplify_changed.emit(simplify_px(value))
@@ -456,6 +496,23 @@ class AITracerDock(QDockWidget):
         self._simplify_slider.blockSignals(False)
         self._refresh_simplify_label()
 
+    def snap_enabled(self) -> bool:
+        return self._snap_check.isChecked()
+
+    def snap_tolerance(self) -> float:
+        """Snap distance in screen pixels."""
+        return self._snap_spin.value()
+
+    def set_snap(self, enabled: bool, px: float):
+        """Restore saved snap settings without emitting snap_changed."""
+        for w in (self._snap_check, self._snap_spin):
+            w.blockSignals(True)
+        self._snap_check.setChecked(enabled)
+        self._snap_spin.setValue(max(SNAP_MIN_PX, min(SNAP_MAX_PX, px)))
+        self._snap_spin.setEnabled(enabled)
+        for w in (self._snap_check, self._snap_spin):
+            w.blockSignals(False)
+
     def set_vertex_count(self, count):
         """Show the vertex count of the current preview (None to hide)."""
         self._vertex_count = count
@@ -518,11 +575,11 @@ class AITracerDock(QDockWidget):
             # Start from NULL (not the widget's natural zero/first-item state)
             # so untouched fields fall back to the layer's default values.
             try:
-                wrapper.setValue(NULL)
+                wrapper.setValues(NULL, [])
             except Exception as exc:
                 _logger.debug("Could not reset field '%s': %s", name, exc)
             if name in saved:
-                wrapper.setValue(saved[name])
+                wrapper.setValues(saved[name], [])
             default = field.defaultValueDefinition()
             if default.isValid() and default.expression():
                 wrapper.widget().setToolTip(
