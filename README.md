@@ -31,6 +31,10 @@ then accept it as a vector polygon with a single keystroke.
   (0–6 px, finest control below 3 px, default 2.8 px) with a live vertex count;
   being in pixels it behaves the same at any zoom level or CRS, and your
   setting is remembered between sessions
+- **Snap to neighbours** — optional topological snapping: the new polygon
+  shares its boundary with polygons already in the output layer, tracing one
+  coherent perimeter across several neighbours; see
+  [Snapping to neighbours](#snapping-to-neighbours)
 - **Edit the last polygon** — one click (or **E**) selects the polygon you just
   accepted and hands it to QGIS's own Vertex tool; no vertex-editing code to
   learn
@@ -126,7 +130,8 @@ button at the bottom of the dock to wipe the venv and reinstall cleanly
 5. **Left-click** on a feature in the canvas — a green polygon preview appears.
 6. **Left-click** again to add more context; **right-click** to mark areas to
    exclude; **Ctrl+Z** to remove the last point.
-7. Adjust the **Simplify** slider to control vertex density.
+7. Adjust the **Simplify** slider to control vertex density. Optionally tick
+   **Snap to neighbours** to attach the outline to existing polygons.
 8. Choose the **output layer** from the drop-down (defaults to the AITracer
    memory layer; any polygon vector layer in the project can be used).
 9. Press **Enter** (or click **Accept**) to save the polygon. Press **Escape**
@@ -177,6 +182,40 @@ first click.
 Your choice is remembered between sessions. Changing the model while a preview
 is on screen cancels that preview, because its cached encoding belongs to the
 previous model.
+
+---
+
+## Snapping to neighbours
+
+When **Snap to neighbours** is ticked, the preview is attached to the polygons
+already in the output layer, so adjacent features share their boundaries
+instead of leaving gaps and overlaps:
+
+1. Parts of the new polygon covering an existing polygon are cut away.
+2. The outlines of all nearby polygons are treated as one network. Every edge
+   of the new polygon that runs along it (both ends within the snap distance)
+   is replaced by the path along that network, crossing from one neighbour to
+   the next where their outlines meet — like QGIS's tracing tool. Where
+   neighbours do not touch, the outline joins the two nearest points directly.
+3. The vertices now lying on a neighbour's boundary are added to that neighbour,
+   so both outlines have coincident vertices. The neighbours' shapes do not
+   change.
+
+The snap distance is set next to the checkbox in screen pixels (default 8 px),
+so it behaves the same at any zoom level. The preview already shows the snapped
+outline, and one undo in QGIS reverts the new polygon together with the
+vertices added to its neighbours.
+
+Notes:
+
+- Snapping works only if the output layer uses the same CRS as the map.
+- A lone vertex near a neighbour is not snapped: the minimum contact is one
+  segment.
+- Neighbours covered for more than half by the new polygon, or lying entirely
+  inside it, are left alone, as that usually means a different object was traced.
+- Snapped polygons can end up with many vertices, because they take over the
+  vertices of the outlines they follow. Use **Simplify** and the layer's own
+  tools if you need fewer.
 
 ---
 
@@ -285,6 +324,7 @@ plugin/                  QGIS plugin (Python / PyQt6)
   dock.py                Dock panel UI
   map_tool.py            Canvas event capture (clicks, keyboard)
   geometry.py            Pixel ↔ geo coordinate conversion (QgsMapToPixel)
+  snapping.py            Topological snapping of a new polygon to its neighbours
   canvas_capture.py      Canvas screenshot → base64 PNG
   preview.py             QgsRubberBand overlay
   backend_client.py      HTTP client for the local backend
